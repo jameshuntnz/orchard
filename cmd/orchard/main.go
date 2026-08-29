@@ -336,6 +336,14 @@ func serve(args []string) error {
 		log.Warn("development mode: serving plain HTTP, not joining the tailnet",
 			"addr", *devAddr, "baseUrl", srv.BaseURL)
 	} else {
+		// Whether tsnet is about to register a brand-new node, checked before it
+		// starts because afterwards there is state either way.
+		tsDir := filepath.Join(cfg.StateDir, config.TSNetSubdir)
+		freshNode := true
+		if entries, err := os.ReadDir(tsDir); err == nil && len(entries) > 0 {
+			freshNode = false
+		}
+
 		ts := &tsnet.Server{
 			Hostname: cfg.Hostname,
 			Dir:      cfg.StateDir + "/" + config.TSNetSubdir,
@@ -349,6 +357,18 @@ func serve(args []string) error {
 			return fmt.Errorf("join tailnet: %w", err)
 		}
 		name := strings.TrimSuffix(status.Self.DNSName, ".")
+
+		// The single most likely container misconfiguration: an ephemeral state
+		// directory. The node key and the provisioned certificate live there, so the
+		// service re-registers as a brand-new node on every restart, accumulating dead
+		// nodes and losing its certificate each time — and nothing about a working
+		// first run looks wrong (DESIGN §13.2).
+		if freshNode && cfg.Update.InContainer {
+			log.Warn("registered a NEW tailnet node from inside a container: "+
+				"if this directory is not a persistent volume it will happen on every restart, "+
+				"accumulating dead nodes and losing the certificate each time",
+				"stateDir", cfg.StateDir, "node", name)
+		}
 
 		srv.BaseURL = cfg.BaseURL
 		if srv.BaseURL == "" {
