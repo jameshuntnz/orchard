@@ -1,7 +1,7 @@
 name: CI
 
 # Main and pull requests. Orchard is pure Go — the macOS-specific parts are deployment,
-# not code — so this runs on a Linux container rather than occupying one of the node's
+# not code — so this runs in a Linux container rather than occupying one of the node's
 # two macOS VM slots.
 on:
   push:
@@ -18,7 +18,8 @@ permissions:
 
 jobs:
   check:
-    runs-on: [self-hosted, linux, arm64]
+    # image:go carries the toolchain and a C compiler; see .sapling/images/go/Dockerfile.
+    runs-on: [self-hosted, linux, arm64, image:go]
     # A self-hosted job queues indefinitely when no runner matches, so cap it rather
     # than letting a run hang until someone notices.
     timeout-minutes: 20
@@ -26,13 +27,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # No image: label, so this is the default runner agent rather than ubuntu-latest.
-      # setup-go brings its own toolchain, tracking go.mod so the version never drifts
-      # from what the module declares.
-      - uses: actions/setup-go@v5
+      # A Linux job shares no cache between runs, and tsnet pulls a large dependency
+      # tree, so the module cache is worth restoring even though the toolchain is baked.
+      - uses: actions/cache@v4
         with:
-          go-version-file: go.mod
-          cache: true
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-${{ hashFiles('go.sum') }}
+          restore-keys: go-
+
+      - name: Go version
+        run: go version
 
       - name: gofmt
         run: |
@@ -43,6 +49,7 @@ jobs:
 
       - run: go vet ./...
 
+      # -race is why the image carries gcc.
       - run: go test ./... -race
 
       # The service is deployed as a darwin/arm64 binary; prove that target still links.
