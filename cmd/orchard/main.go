@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"os/user"
 	"runtime/debug"
 	"strings"
 	"syscall"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/jameshuntnz/orchard/internal/api"
 	"github.com/jameshuntnz/orchard/internal/config"
+	"github.com/jameshuntnz/orchard/internal/install"
 	"github.com/jameshuntnz/orchard/internal/store"
 	"github.com/jameshuntnz/orchard/internal/web"
 )
@@ -40,10 +42,20 @@ func main() {
 			fmt.Fprintln(os.Stderr, "orchard:", err)
 			os.Exit(1)
 		}
+	case "install":
+		if err := provision(args, true); err != nil {
+			fmt.Fprintln(os.Stderr, "orchard:", err)
+			os.Exit(1)
+		}
+	case "doctor":
+		if err := provision(args, false); err != nil {
+			fmt.Fprintln(os.Stderr, "orchard:", err)
+			os.Exit(1)
+		}
 	case "version":
 		fmt.Println(buildVersion())
 	default:
-		fmt.Fprintf(os.Stderr, "orchard: unknown command %q (want: serve, version)\n", cmd)
+		fmt.Fprintf(os.Stderr, "orchard: unknown command %q (want: serve, install, doctor, version)\n", cmd)
 		os.Exit(2)
 	}
 }
@@ -56,6 +68,55 @@ func buildVersion() string {
 		return info.Main.Version
 	}
 	return "dev"
+}
+
+// provision runs the install steps, applying fixes when apply is set. `doctor` is the
+// same checks with apply false — one code path, so what it reports is what install acts
+// on rather than a second opinion that can drift.
+func provision(args []string, apply bool) error {
+	name := "doctor"
+	if apply {
+		name = "install"
+	}
+	fs := flag.NewFlagSet(name, flag.ExitOnError)
+	prefix := fs.String("prefix", install.DefaultPrefix, "install root, owned by the service user")
+	svcUser := fs.String("user", defaultServiceUser(), "account the service runs as")
+	hostname := fs.String("hostname", install.DefaultHostname, "tsnet node name")
+	uploadAddr := fs.String("upload-addr", "", "bind address for the CI upload listener, e.g. 0.0.0.0:8477")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	plan := install.Plan{
+		Prefix:     *prefix,
+		User:       *svcUser,
+		Hostname:   *hostname,
+		UploadAddr: *uploadAddr,
+	}
+
+	fmt.Printf("orchard %s %s\n  prefix %s, user %s\n\n", name, buildVersion(), plan.Prefix, plan.User)
+	problems := install.Run(context.Background(), plan.Steps(), apply, os.Stdout)
+	fmt.Println()
+
+	if problems > 0 {
+		return fmt.Errorf("%d step(s) still need attention", problems)
+	}
+	if apply {
+		fmt.Printf("Done. The write token is in %s\n", plan.EnvFile())
+	}
+	return nil
+}
+
+// defaultServiceUser prefers the human who invoked sudo over root, since running the
+// service as root would defeat the point of it owning its own install directory.
+func defaultServiceUser() string {
+	if u := os.Getenv("SUDO_USER"); u != "" {
+		return u
+	}
+	if u, err := user.Current(); err == nil {
+		return u.Username
+	}
+	return "orchard"
 }
 
 func serve(args []string) error {

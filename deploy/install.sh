@@ -1,89 +1,58 @@
 #!/usr/bin/env bash
 #
-# Build Orchard and install it on a Mac over ssh, supervised by launchd.
+# Build Orchard for a remote host, copy it there, and run its own installer.
 #
-#   deploy/install.sh mini [remote-user]
+#   deploy/install.sh <ssh-host> [--user U] [--prefix P] [--upload-addr A]
 #
-# Safe to re-run: it replaces the binary and restarts the service, and never overwrites
-# an existing orchard.env, so the token survives an upgrade.
+# This script deliberately knows nothing about install paths, launchd, systemd or the
+# environment file. All of that lives in `orchard install`, which is also what the
+# self-updater will reuse — a second copy here would drift from it the first time
+# either changed. This is only the part that cannot live in the binary: getting the
+# binary onto a machine it is not yet on.
 #
-# Needs the remote user's sudo password once per run, for /usr/local and
-# /Library/LaunchDaemons. Everything the service itself does afterwards is unprivileged.
+# On a host that already has the binary, skip this entirely:
+#
+#   sudo orchard install --user someone --upload-addr 0.0.0.0:8477
+#   orchard doctor
 
 set -euo pipefail
 
-host="${1:?usage: deploy/install.sh <ssh-host> [remote-user]}"
-remote_user="${2:-admin}"
-prefix=/usr/local/orchard
+host="${1:?usage: deploy/install.sh <ssh-host> [--user U] [--prefix P] [--upload-addr A]}"
+shift
 
 cd "$(dirname "$0")/.."
 
-version=$(git describe --tags --always --dirty 2>/dev/null || echo dev)
-echo "==> building orchard ${version} for darwin/arm64"
-mkdir -p dist
-CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build \
-	-trimpath -ldflags "-s -w -X main.version=${version}" \
-	-o dist/orchard ./cmd/orchard
+# The installer's own flags are passed through untouched, so this script never has to
+# learn about a new one.
+args=("$@")
 
-sed -e "s|__USER__|${remote_user}|g" -e "s|__PREFIX__|${prefix}|g" \
-	deploy/net.orchard.plist >dist/net.orchard.plist
+echo "==> inspecting ${host}"
+read -r remote_os remote_arch <<<"$(ssh "$host" 'echo "$(uname -s) $(uname -m)"')"
+
+case "$remote_os" in
+Darwin) goos=darwin ;;
+Linux) goos=linux ;;
+*) echo "unsupported remote OS: $remote_os" >&2; exit 1 ;;
+esac
+
+case "$remote_arch" in
+arm64 | aarch64) goarch=arm64 ;;
+x86_64 | amd64) goarch=amd64 ;;
+*) echo "unsupported remote architecture: $remote_arch" >&2; exit 1 ;;
+esac
+
+version=$(git describe --tags --always --dirty 2>/dev/null || echo dev)
+echo "==> building orchard ${version} for ${goos}/${goarch}"
+mkdir -p dist
+CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build \
+	-trimpath -ldflags "-s -w -X main.version=${version}" \
+	-o "dist/orchard-${goos}-${goarch}" ./cmd/orchard
 
 echo "==> copying to ${host}"
-scp -q dist/orchard "${host}:/tmp/orchard.new"
-scp -q dist/net.orchard.plist "${host}:/tmp/net.orchard.plist"
+scp -q "dist/orchard-${goos}-${goarch}" "${host}:/tmp/orchard.install"
+ssh "$host" 'chmod +x /tmp/orchard.install'
 
-echo "==> installing (sudo password required on ${host})"
-remote=$(cat <<REMOTE
-set -euo pipefail
-
-prefix=${prefix}
-user=${remote_user}
-
-install -d -o "\$user" -g staff -m 755 "\$prefix" "\$prefix/bin" "\$prefix/state"
-
-# The token is generated on the host and never leaves it. An existing file is left
-# alone, so re-running this does not invalidate whatever CI is already using.
-if [ ! -f "\$prefix/orchard.env" ]; then
-	umask 077
-	cat >"\$prefix/orchard.env" <<ENV
-ORCHARD_STATE_DIR=\$prefix/state
-ORCHARD_TOKEN=\$(openssl rand -hex 32)
-ORCHARD_HOSTNAME=orchard
-
-# The CI upload listener: writes only, bearer token required, no path that serves a
-# build or a page. Restrict it to the guest bridge subnets at the host firewall.
-ORCHARD_UPLOAD_ADDR=0.0.0.0:8477
-
-# ORCHARD_BASE_URL is left unset so it is derived from the tsnet name.
-# TS_AUTHKEY is not set: on first run orchard prints a login URL to its log instead.
-ENV
-	chown "\$user" "\$prefix/orchard.env"
-	chmod 600 "\$prefix/orchard.env"
-	echo "    generated a new token in \$prefix/orchard.env"
-else
-	echo "    keeping the existing \$prefix/orchard.env"
-fi
-
-install -o "\$user" -g staff -m 755 /tmp/orchard.new "\$prefix/bin/orchard"
-install -o root -g wheel -m 644 /tmp/net.orchard.plist /Library/LaunchDaemons/net.orchard.plist
-rm -f /tmp/orchard.new /tmp/net.orchard.plist
-
-launchctl bootout system/net.orchard 2>/dev/null || true
-launchctl bootstrap system /Library/LaunchDaemons/net.orchard.plist
-echo "    installed \$("\$prefix/bin/orchard" version)"
-REMOTE
-)
-
-ssh -t "$host" "sudo bash -s" <<<"$remote"
-
-cat <<NEXT
-
-==> installed. Next:
-
-  # watch it come up, and on first run copy the tailscale login URL out of the log
-  ssh ${host} 'tail -f ${prefix}/orchard.log'
-
-  # the bearer token for CI
-  ssh ${host} 'grep ORCHARD_TOKEN ${prefix}/orchard.env'
-
-NEXT
+echo "==> running the installer (sudo password required on ${host})"
+# The binary installs itself from wherever it is run, so the temporary copy is the
+# installer and the installed copy is what it produces.
+ssh -t "$host" "sudo /tmp/orchard.install install ${args[*]}; rm -f /tmp/orchard.install"

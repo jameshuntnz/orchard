@@ -110,17 +110,50 @@ scripts/orchard-publish.sh sweep --app example --branch main --branch feature/x
 
 Set `ORCHARD_URL` to skip gateway resolution, for a runner that is itself on the tailnet.
 
-## Installing on a Mac
+## Installing
+
+The binary installs itself. On the host:
 
 ```bash
-deploy/install.sh mini
+sudo orchard install --user someone --upload-addr 0.0.0.0:8477
 ```
 
-Builds a `darwin/arm64` binary, copies it over, and installs a launchd daemon that runs as
-an ordinary user — nothing here needs root at run time, because tsnet's `:443` listener
-lives inside the userspace netstack rather than on a host port. The token is generated on
-the target into a `0600` env file and never leaves it. Re-running upgrades in place and
-leaves the token alone.
+It creates `/usr/local/orchard/{bin,state}` owned by the service user, generates a
+`0600` environment file with a fresh token, installs itself into place, and registers a
+supervisor — **launchd on macOS, systemd on Linux**. Nothing needs root at *run* time,
+because tsnet's `:443` listener lives inside the userspace netstack rather than on a host
+port; root is needed only to write to `/usr/local` and register the service.
+
+Every step is check-then-fix, so it is safe to re-run: it fixes only what is missing,
+upgrades the binary in place, and never overwrites an existing environment file — the
+token CI is using survives an upgrade.
+
+`--prefix` moves the install root. Installing into a prefix you already own needs no sudo
+at all, apart from registering the supervisor.
+
+To see the same checks without changing anything:
+
+```bash
+orchard doctor
+```
+
+`doctor` runs exactly the checks `install` acts on, so it cannot drift into a second
+opinion. It exits non-zero when something needs attention. A check that cannot run reports
+as unverified rather than green — reporting green on an unknown is worse than reporting
+nothing.
+
+### From another machine
+
+`deploy/install.sh` is a thin convenience wrapper for a host that does not have the binary
+yet. It detects the remote OS and architecture, cross-compiles, copies the result over, and
+runs `orchard install` there, passing your flags through untouched:
+
+```bash
+deploy/install.sh mini --upload-addr 0.0.0.0:8477
+```
+
+It deliberately knows nothing about install paths or service definitions — that lives in
+the binary, which is also what the self-updater will reuse.
 
 ## A note for testers
 
