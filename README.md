@@ -296,6 +296,10 @@ default-denies egress to private address space already permits a job to reach it
 gateway, because DHCP, DNS and package caches depend on that; Orchard just uses a port on
 a path that was already open.
 
+## Licence
+
+MIT — see [LICENSE](LICENSE).
+
 ## Development
 
 ```
