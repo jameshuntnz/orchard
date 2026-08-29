@@ -1,0 +1,21 @@
+{{define "content"}}
+<h1>Orchard</h1>
+<p class="sub">Internal builds, one per branch. Open an app to pick one.</p>
+
+{{if .Apps}}
+<ul class="cards">
+  {{range .Apps}}
+  <li><a class="card" href="/a/{{.ID}}">
+    <div class="name">{{.Title}}</div>
+    <div class="meta">
+      <span class="mono">{{.ID}}</span> ·
+      {{len .Builds}} branch{{if ne (len .Builds) 1}}es{{end}} ·
+      newest {{since .LatestAt}}
+    </div>
+  </a></li>
+  {{end}}
+</ul>
+{{else}}
+<p class="empty">No builds yet. An app appears here the first time CI publishes one.</p>
+{{end}}
+{{end}}

@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>net.orchard</string>
+
+	<!-- Runs as an ordinary user. tsnet's :443 listener lives inside the userspace
+	     netstack rather than on a host port, and the upload listener is above 1024,
+	     so nothing here needs root. The user owns __PREFIX__ so that a future
+	     self-update can replace the binary without privilege (DESIGN §13.1). -->
+	<key>UserName</key>
+	<string>__USER__</string>
+
+	<!-- The token is read from a 0600 env file rather than embedded here: this plist
+	     must be root-owned and world-readable for launchd, and the token can then be
+	     rotated without touching launchd configuration. exec means launchd supervises
+	     orchard itself, not the shell. -->
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/sh</string>
+		<string>-c</string>
+		<string>set -a; . __PREFIX__/orchard.env; set +a; exec __PREFIX__/bin/orchard serve</string>
+	</array>
+
+	<key>RunAtLoad</key>
+	<true/>
+
+	<!-- The supervisor half of the update story: on exit, bring it back (DESIGN §14.1). -->
+	<key>KeepAlive</key>
+	<true/>
+
+	<key>WorkingDirectory</key>
+	<string>__PREFIX__</string>
+
+	<!-- Logging is one structured line per request on stdout, for the supervisor to
+	     capture. No log files to rotate from inside the service (DESIGN §4.4). -->
+	<key>StandardOutPath</key>
+	<string>__PREFIX__/orchard.log</string>
+	<key>StandardErrorPath</key>
+	<string>__PREFIX__/orchard.log</string>
+
+	<key>ProcessType</key>
+	<string>Background</string>
+</dict>
+</plist>

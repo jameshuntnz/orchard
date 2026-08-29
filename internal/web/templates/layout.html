@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>{{block "title" .}}Orchard{{end}}</title>
+<style>
+:root {
+  --bg: #fbfaf7; --panel: #fff; --line: #e3e0d8; --ink: #1d1c1a;
+  --muted: #6d6a63; --accent: #2f6b3f; --accent-ink: #fff; --warn-bg: #fdf3e3;
+  --warn-line: #e6c67e; --warn-ink: #6a4a08;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16171a; --panel: #1e2024; --line: #2f3238; --ink: #e8e6e1;
+    --muted: #9a978f; --accent: #6fbf85; --accent-ink: #0e1a12; --warn-bg: #2a2417;
+    --warn-line: #5d4c24; --warn-ink: #e8c987;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; padding: 2rem 1rem 4rem; background: var(--bg); color: var(--ink);
+  font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+}
+.wrap { max-width: 44rem; margin: 0 auto; }
+a { color: var(--accent); }
+h1 { font-size: 1.5rem; margin: 0 0 .25rem; letter-spacing: -0.01em; }
+h2 { font-size: 1rem; margin: 2rem 0 .75rem; color: var(--muted); font-weight: 600;
+     text-transform: uppercase; letter-spacing: .06em; }
+.sub { color: var(--muted); margin: 0 0 1.5rem; }
+.crumb { display: block; color: var(--muted); text-decoration: none; margin-bottom: 1rem;
+         font-size: .875rem; }
+.crumb:hover { color: var(--accent); }
+ul.cards { list-style: none; padding: 0; margin: 0; display: grid; gap: .625rem; }
+.card {
+  display: block; padding: .875rem 1rem; background: var(--panel); color: inherit;
+  border: 1px solid var(--line); border-radius: 10px; text-decoration: none;
+}
+a.card:hover { border-color: var(--accent); }
+.card .name { font-weight: 600; word-break: break-word; }
+.card .meta { color: var(--muted); font-size: .875rem; margin-top: .2rem;
+              word-break: break-word; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .9em; }
+.warn {
+  background: var(--warn-bg); border: 1px solid var(--warn-line); color: var(--warn-ink);
+  border-radius: 10px; padding: .75rem 1rem; margin: 0 0 1.5rem; font-size: .9375rem;
+}
+.warn strong { display: block; letter-spacing: .04em; text-transform: uppercase;
+               font-size: .8125rem; margin-bottom: .25rem; }
+.install {
+  display: block; text-align: center; background: var(--accent); color: var(--accent-ink);
+  padding: 1rem; border-radius: 12px; font-size: 1.125rem; font-weight: 600;
+  text-decoration: none; margin: 1.5rem 0;
+}
+dl.facts { display: grid; grid-template-columns: max-content 1fr; gap: .4rem 1rem;
+           margin: 0; padding: 1rem; background: var(--panel);
+           border: 1px solid var(--line); border-radius: 10px; }
+dl.facts dt { color: var(--muted); font-size: .875rem; }
+dl.facts dd { margin: 0; word-break: break-word; }
+.notes { white-space: pre-wrap; }
+figure.qrbox { margin: 2rem 0 0; text-align: center; }
+figure.qrbox figcaption { color: var(--muted); font-size: .875rem; margin-top: .5rem; }
+svg.qr { width: 11rem; height: 11rem; border-radius: 8px; }
+.empty { color: var(--muted); }
+footer { margin-top: 3rem; color: var(--muted); font-size: .8125rem; }
+</style>
+</head>
+<body>
+<div class="wrap">
+{{template "content" .}}
+<footer>Orchard — internal builds, tailnet only. Not for release.</footer>
+</div>
+</body>
+</html>

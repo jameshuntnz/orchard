@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "branch": "feature/new-checkout",
+  "commit": "abcdef1234567890abcdef1234567890abcdef12",
+  "version": "0.0.57",
+  "buildNumber": "57",
+  "bundleId": "com.example.app",
+  "title": "Example",
+  "notes": "TEST BUILD - do not release.",
+  "runUrl": "https://ci.example.com/runs/123",
+  "publishedAt": "2026-08-29T04:12:00Z",
+  "ipaSize": 41234567
+}

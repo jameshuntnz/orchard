@@ -1,0 +1,23 @@
+{{define "title"}}{{.App.Title}} — Orchard{{end}}
+{{define "content"}}
+<a class="crumb" href="/">← all apps</a>
+<h1>{{.App.Title}}</h1>
+<p class="sub"><span class="mono">{{.App.ID}}</span> · one build per branch, always the newest</p>
+
+{{if .App.Builds}}
+<ul class="cards">
+  {{range .App.Builds}}
+  <li><a class="card" href="/a/{{.App}}/b/{{.Slug}}">
+    <div class="name">{{.Branch}}</div>
+    <div class="meta">
+      {{.Version}} ({{.BuildNumber}}) ·
+      <span class="mono">{{.ShortCommit}}</span> ·
+      {{since .PublishedAt}}
+    </div>
+  </a></li>
+  {{end}}
+</ul>
+{{else}}
+<p class="empty">This app has no builds.</p>
+{{end}}
+{{end}}

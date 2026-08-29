@@ -1,0 +1,31 @@
+{{define "title"}}{{.Build.Branch}} — {{.Build.Title}} — Orchard{{end}}
+{{define "content"}}
+<a class="crumb" href="/a/{{.App}}">← {{.Build.Title}}</a>
+<h1>{{.Build.Title}}</h1>
+<p class="sub">{{.Build.Branch}}</p>
+
+<div class="warn">
+  <strong>Test build — do not release</strong>
+  Installing replaces any app already on this phone with the bundle identifier
+  <span class="mono">{{.Build.BundleID}}</span>, and takes its local data with it.
+  A failed install leaves that app broken until you delete it by hand.
+</div>
+
+<a class="install" href="{{installURL .ManifestURL}}">Install {{.Build.Title}}</a>
+
+<dl class="facts">
+  <dt>Bundle ID</dt><dd class="mono">{{.Build.BundleID}}</dd>
+  <dt>Version</dt><dd>{{.Build.Version}} ({{.Build.BuildNumber}})</dd>
+  <dt>Branch</dt><dd>{{.Build.Branch}}</dd>
+  <dt>Commit</dt><dd class="mono">{{.Build.ShortCommit}}</dd>
+  <dt>Published</dt><dd>{{since .Build.PublishedAt}}</dd>
+  <dt>Size</dt><dd>{{bytes .Build.IPASize}}</dd>
+  {{if .Build.RunURL}}<dt>CI run</dt><dd><a href="{{.Build.RunURL}}">{{.Build.RunURL}}</a></dd>{{end}}
+  {{if .Build.Notes}}<dt>Notes</dt><dd class="notes">{{.Build.Notes}}</dd>{{end}}
+</dl>
+
+<figure class="qrbox">
+  {{qr .PageURL}}
+  <figcaption>Scan to open this page on the phone you want to install on.</figcaption>
+</figure>
+{{end}}
