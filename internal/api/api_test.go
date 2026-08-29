@@ -488,6 +488,11 @@ func TestUploadListenerServesWritesOnly(t *testing.T) {
 
 func TestHealthz(t *testing.T) {
 	h := newHarness(t)
+	h.SelfUpdate = SelfUpdateStatus{Enabled: true, Channel: "dev"}
+	h.tailnet.Close()
+	h.tailnet = httptest.NewServer(h.Server.TailnetMux())
+	t.Cleanup(h.tailnet.Close)
+
 	resp := h.get(t, "/healthz")
 	wantStatus(t, resp, http.StatusOK)
 
@@ -496,7 +501,18 @@ func TestHealthz(t *testing.T) {
 		Version     string   `json:"version"`
 		APIVersions []string `json:"apiVersions"`
 		Deprecated  []string `json:"deprecated"`
+		SelfUpdate  struct {
+			Enabled bool   `json:"enabled"`
+			Channel string `json:"channel"`
+			Reason  string `json:"reason"`
+		} `json:"selfUpdate"`
 	}](t, resp)
+
+	// Whether the node moves on its own is half of "what is running here", now that
+	// dev builds publish per green commit.
+	if !got.SelfUpdate.Enabled || got.SelfUpdate.Channel != "dev" {
+		t.Errorf("selfUpdate = %+v", got.SelfUpdate)
+	}
 	if got.Status != "ok" || got.Version != "test" {
 		t.Errorf("healthz = %+v", got)
 	}
@@ -599,4 +615,25 @@ func TestAllowlistDoesNotAffectTheTailnetListener(t *testing.T) {
 	wantStatus(t, h.publish(t, "example", "main", "com.example.app"), http.StatusOK)
 	wantStatus(t, h.get(t, "/a/example/b/main"), http.StatusOK)
 	wantStatus(t, h.get(t, "/api/v1/apps"), http.StatusOK)
+}
+
+// When self-update is off, /healthz says why. "Not moving" and "not moving because
+// nobody configured it" are different situations to be looking at during an incident.
+func TestHealthzReportsWhySelfUpdateIsOff(t *testing.T) {
+	h := newHarness(t)
+	h.SelfUpdate = SelfUpdateStatus{Reason: "container: the image tag is the unit of deployment"}
+	h.tailnet.Close()
+	h.tailnet = httptest.NewServer(h.Server.TailnetMux())
+	t.Cleanup(h.tailnet.Close)
+
+	got := decode[struct {
+		SelfUpdate SelfUpdateStatus `json:"selfUpdate"`
+	}](t, h.get(t, "/healthz"))
+
+	if got.SelfUpdate.Enabled {
+		t.Error("selfUpdate.enabled is true")
+	}
+	if !strings.Contains(got.SelfUpdate.Reason, "image tag") {
+		t.Errorf("reason = %q", got.SelfUpdate.Reason)
+	}
 }

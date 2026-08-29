@@ -434,13 +434,17 @@ func serve(args []string) error {
 	switch {
 	case *devAddr != "":
 		// Development mode replaces the binary's own idea of where it lives.
+		srv.SelfUpdate = api.SelfUpdateStatus{Reason: "development mode"}
 	case cfg.Update.InContainer:
+		srv.SelfUpdate = api.SelfUpdateStatus{Reason: "container: the image tag is the unit of deployment"}
 		log.Info("self-update disabled: this is a container, so the image tag is the unit of deployment")
 	case !cfg.Update.Enabled:
+		srv.SelfUpdate = api.SelfUpdateStatus{Reason: "disabled by configuration"}
 		log.Info("self-update disabled by configuration")
 	default:
 		binary, err := os.Executable()
 		if err != nil {
+			srv.SelfUpdate = api.SelfUpdateStatus{Reason: "cannot determine the running binary"}
 			log.Warn("self-update disabled: cannot determine the running binary", "err", err)
 			break
 		}
@@ -455,9 +459,11 @@ func serve(args []string) error {
 			Token:    cfg.Update.Token,
 		}, buildVersion(), binary)
 		if err != nil {
+			srv.SelfUpdate = api.SelfUpdateStatus{Reason: err.Error()}
 			log.Warn("self-update disabled", "err", err)
 			break
 		}
+		srv.SelfUpdate = api.SelfUpdateStatus{Enabled: true, Channel: cfg.Update.Channel}
 		log.Info("self-update enabled", "repo", cmp.Or(cfg.Update.Repo, update.DefaultRepo),
 			"channel", cfg.Update.Channel, "interval", cfg.Update.Interval.String())
 		go updateLoop(ctx, u, cfg.Update.Interval, srv.PublishesInFlight, log, stop)

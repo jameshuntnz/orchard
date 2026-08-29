@@ -46,6 +46,11 @@ type Server struct {
 	// the tailnet is already the boundary (DESIGN §10).
 	UploadAllowed func(netip.Addr) bool
 
+	// SelfUpdate describes whether this node moves on its own. With dev builds
+	// publishing per green commit, "which version is it running" stops being the
+	// whole question and "will it change under me" becomes the other half.
+	SelfUpdate SelfUpdateStatus
+
 	// publishing counts uploads currently being received. An update that replaced the
 	// binary mid-publish would abort a transfer that may have taken minutes.
 	publishing atomic.Int64
@@ -135,12 +140,23 @@ func (s *Server) requireToken(next http.HandlerFunc) http.Handler {
 	})
 }
 
+// SelfUpdateStatus is reported by /healthz. Additive to v1: consumers ignore fields
+// they do not know, and nothing existing changed shape.
+type SelfUpdateStatus struct {
+	Enabled bool   `json:"enabled"`
+	Channel string `json:"channel,omitempty"`
+	// Reason says why it is off, when it is: a container, configuration, or a
+	// running version that cannot be ordered against a release feed.
+	Reason string `json:"reason,omitempty"`
+}
+
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":      "ok",
 		"version":     s.Version,
 		"apiVersions": APIVersions,
 		"deprecated":  Deprecated,
+		"selfUpdate":  s.SelfUpdate,
 	})
 }
 
