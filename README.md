@@ -84,6 +84,23 @@ hands it the one fact it did not have. The detail goes to the log instead.
 `any` disables the check. It has to be written explicitly, because an unrestricted
 plain-HTTP write listener should be a decision rather than an omission.
 
+For defence in depth on macOS, `orchard firewall` prints packet-filter rules for the same
+port and the same CIDRs, and `sudo orchard firewall --apply` installs them as a pf anchor:
+
+```bash
+sudo orchard firewall --apply
+```
+
+The service already refuses these callers; this stops the port answering them at all. It
+is a separate command rather than part of `install` because pf is shared with anything
+else on the host that uses it, and reloading it should not be a side effect of putting a
+binary in place. The ruleset is parsed with `pfctl -n` before it is loaded, the previous
+`/etc/pf.conf` is kept as `.orchard.bak`, and the rules reference no interface and no
+other service — a renumbered bridge or somebody else's anchor cannot change what they do.
+
+Keep both layers: the pf rules are absent whenever pf is disabled, and that is not
+something the service can detect.
+
 ## API
 
 All endpoints are versioned under `/api/v1`. Writes require `Authorization: Bearer <token>`;

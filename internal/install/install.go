@@ -185,6 +185,7 @@ func (p Plan) Steps() []Step {
 		configStep{plan: p},
 		binaryStep{plan: p},
 		serviceStep(p),
+		firewallStep{plan: p},
 		tailnetStep{plan: p},
 	}
 }

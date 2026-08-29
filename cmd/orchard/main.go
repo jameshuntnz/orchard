@@ -52,10 +52,15 @@ func main() {
 			fmt.Fprintln(os.Stderr, "orchard:", err)
 			os.Exit(1)
 		}
+	case "firewall":
+		if err := firewall(args); err != nil {
+			fmt.Fprintln(os.Stderr, "orchard:", err)
+			os.Exit(1)
+		}
 	case "version":
 		fmt.Println(buildVersion())
 	default:
-		fmt.Fprintf(os.Stderr, "orchard: unknown command %q (want: serve, install, doctor, version)\n", cmd)
+		fmt.Fprintf(os.Stderr, "orchard: unknown command %q (want: serve, install, doctor, firewall, version)\n", cmd)
 		os.Exit(2)
 	}
 }
@@ -107,6 +112,48 @@ func provision(args []string, apply bool) error {
 		fmt.Printf("Done. The write token is in %s\n", plan.EnvFile())
 	}
 	return nil
+}
+
+// firewall prints or installs the packet-filter rules for the upload listener.
+//
+// Separate from `install` on purpose: pf on a host is shared with whatever else uses it,
+// and reloading it is not something an install should do as a side effect of putting a
+// binary in place.
+func firewall(args []string) error {
+	fs := flag.NewFlagSet("firewall", flag.ExitOnError)
+	apply := fs.Bool("apply", false, "write the anchor and load it (needs root)")
+	uploadAddr := fs.String("upload-addr", "", "the listener being restricted, e.g. 0.0.0.0:8477")
+	uploadAllow := fs.String("upload-allow", install.DefaultUploadAllow, "CIDRs allowed to reach it")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	// Default to what the service is actually configured with, so the rules cannot
+	// drift from the allowlist they are meant to reinforce.
+	if *uploadAddr == "" {
+		*uploadAddr = os.Getenv("ORCHARD_UPLOAD_ADDR")
+	}
+	if v := os.Getenv("ORCHARD_UPLOAD_ALLOW"); v != "" && !isFlagSet(fs, "upload-allow") {
+		*uploadAllow = v
+	}
+	if *uploadAddr == "" {
+		return errors.New("no upload listener to restrict: pass --upload-addr or set ORCHARD_UPLOAD_ADDR")
+	}
+
+	return install.Firewall(context.Background(), install.Plan{
+		UploadAddr:  *uploadAddr,
+		UploadAllow: *uploadAllow,
+	}, *apply, os.Stdout)
+}
+
+func isFlagSet(fs *flag.FlagSet, name string) bool {
+	set := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			set = true
+		}
+	})
+	return set
 }
 
 // defaultServiceUser prefers the human who invoked sudo over root, since running the
@@ -249,7 +296,12 @@ func serve(args []string) error {
 		}
 		srv.UploadAllowed = cfg.AllowsUpload
 		upload = &http.Server{
-			Handler:           api.Logging(srv.UploadMux(), log, "upload", nil),
+			// The source address is logged on every request here, not just on a
+			// refusal. The allowlist covers the range virtualisation hands to guest
+			// bridges, and seeing which address CI actually arrives from is what
+			// turns a renumbered bridge into something noticed rather than a publish
+			// that starts failing.
+			Handler:           api.Logging(srv.UploadMux(), log, "upload", sourceAddr),
 			ReadHeaderTimeout: 10 * time.Second,
 			ReadTimeout:       60 * time.Minute,
 			WriteTimeout:      5 * time.Minute,
@@ -305,6 +357,15 @@ func tsnetLogf(log *slog.Logger) func(string, ...any) {
 		}
 		log.Debug("tsnet: " + msg)
 	}
+}
+
+// sourceAddr is the peer identity for a listener with no tsnet underneath it.
+func sourceAddr(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }
 
 // ageSweeper is the backstop for a consumer that stops calling in. It is off unless
