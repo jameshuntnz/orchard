@@ -110,13 +110,19 @@ func provision(args []string, apply bool) error {
 	}
 
 	fmt.Printf("orchard %s %s\n  prefix %s, user %s\n\n", name, buildVersion(), plan.Prefix, plan.User)
-	problems := install.Run(context.Background(), plan.Steps(), apply, os.Stdout)
+	res := install.Run(context.Background(), plan.Steps(), apply, os.Stdout)
 	fmt.Println()
 
-	if problems > 0 {
-		return fmt.Errorf("%d step(s) still need attention", problems)
+	// Only things that are wrong fail the command. A step waiting on a person is
+	// outstanding, not broken, and failing on it makes this impossible to use from a
+	// script that goes on to do the next thing.
+	if res.NeedsAttention() {
+		return fmt.Errorf("%d step(s) need attention", res.Failed+res.Fixable)
 	}
-	if apply {
+	switch {
+	case res.Manual > 0:
+		fmt.Println("Nothing failed. Re-run once the steps above marked \"you\" are done.")
+	case apply:
 		fmt.Printf("Done. The write token is in %s\n", plan.EnvFile())
 	}
 	return nil

@@ -55,13 +55,13 @@ func TestRunWithoutApplyNeverFixes(t *testing.T) {
 	steps := []Step{fakeStep{name: "a", state: Fixable("missing"), fixCalls: &calls}}
 
 	var out bytes.Buffer
-	problems := Run(context.Background(), steps, false, &out)
+	res := Run(context.Background(), steps, false, &out)
 
 	if calls != 0 {
 		t.Errorf("Fix called %d times with apply=false", calls)
 	}
-	if problems != 1 {
-		t.Errorf("problems = %d, want 1", problems)
+	if res.Fixable != 1 || !res.NeedsAttention() {
+		t.Errorf("res = %+v, want one fixable needing attention", res)
 	}
 }
 
@@ -70,8 +70,8 @@ func TestRunApplyFixes(t *testing.T) {
 	steps := []Step{fakeStep{name: "a", state: Fixable("missing"), fixCalls: &calls}}
 
 	var out bytes.Buffer
-	if problems := Run(context.Background(), steps, true, &out); problems != 0 {
-		t.Errorf("problems = %d, want 0", problems)
+	if res := Run(context.Background(), steps, true, &out); !res.Complete() {
+		t.Errorf("res = %+v, want complete", res)
 	}
 	if calls != 1 {
 		t.Errorf("Fix called %d times, want 1", calls)
@@ -81,8 +81,8 @@ func TestRunApplyFixes(t *testing.T) {
 func TestRunApplyCountsAFailedFix(t *testing.T) {
 	steps := []Step{fakeStep{name: "a", state: Fixable("missing"), fixErr: errors.New("nope")}}
 	var out bytes.Buffer
-	if problems := Run(context.Background(), steps, true, &out); problems != 1 {
-		t.Errorf("problems = %d, want 1", problems)
+	if res := Run(context.Background(), steps, true, &out); res.Failed != 1 || !res.NeedsAttention() {
+		t.Errorf("res = %+v, want one failure", res)
 	}
 	if !strings.Contains(out.String(), "nope") {
 		t.Errorf("the failure reason was not reported: %s", out.String())
@@ -94,8 +94,12 @@ func TestRunApplyCountsAFailedFix(t *testing.T) {
 func TestRunUnverifiedIsNotAProblem(t *testing.T) {
 	steps := []Step{fakeStep{name: "a", state: Unverified("needs root to read")}}
 	var out bytes.Buffer
-	if problems := Run(context.Background(), steps, true, &out); problems != 0 {
-		t.Errorf("problems = %d, want 0", problems)
+	res := Run(context.Background(), steps, true, &out)
+	if res.NeedsAttention() {
+		t.Errorf("res = %+v, want an unknown not to count as a problem", res)
+	}
+	if res.Unverified != 1 {
+		t.Errorf("Unverified = %d, want 1", res.Unverified)
 	}
 	if !strings.Contains(out.String(), "needs root to read") {
 		t.Error("the reason was not reported")
@@ -105,11 +109,35 @@ func TestRunUnverifiedIsNotAProblem(t *testing.T) {
 func TestRunPrintsManualInstructions(t *testing.T) {
 	steps := []Step{fakeStep{name: "tailnet", state: Manual("not joined", "open the login URL")}}
 	var out bytes.Buffer
-	if problems := Run(context.Background(), steps, true, &out); problems != 1 {
-		t.Errorf("problems = %d, want 1", problems)
+	res := Run(context.Background(), steps, true, &out)
+	if res.Manual != 1 {
+		t.Errorf("Manual = %d, want 1", res.Manual)
 	}
 	if !strings.Contains(out.String(), "open the login URL") {
 		t.Errorf("instructions missing: %s", out.String())
+	}
+
+	// The distinction the exit code turns on: waiting on a person is not a failure.
+	// An install that did everything it could and left this behind has succeeded, and
+	// failing here makes the command unusable from a script.
+	if res.NeedsAttention() {
+		t.Error("a manual step counted as something needing attention")
+	}
+	if res.Complete() {
+		t.Error("a manual step should still leave the install incomplete")
+	}
+}
+
+// A run with a manual step alongside a real failure still fails.
+func TestRunManualDoesNotMaskAFailure(t *testing.T) {
+	steps := []Step{
+		fakeStep{name: "tailnet", state: Manual("not joined", "open the login URL")},
+		fakeStep{name: "dirs", state: Failed("not a directory")},
+	}
+	var out bytes.Buffer
+	res := Run(context.Background(), steps, true, &out)
+	if !res.NeedsAttention() {
+		t.Errorf("res = %+v, want the failure to count", res)
 	}
 }
 

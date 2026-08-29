@@ -92,11 +92,34 @@ type Step interface {
 	Fix(ctx context.Context) (string, error)
 }
 
-// Run checks every step in order, applying fixes when apply is set. It returns the number
-// of steps still needing attention, so `doctor` can exit non-zero on a broken node.
-func Run(ctx context.Context, steps []Step, apply bool, w io.Writer) int {
+// Result counts how each step came out.
+//
+// The distinction that matters is between something being wrong and something being
+// waiting on a person. An install that did everything it could and left a step needing
+// a human has not failed, and reporting it as a failure makes the command impossible to
+// use in a script — which is exactly what happened before this was split apart.
+type Result struct {
+	// Failed is broken, or a fix that did not work.
+	Failed int
+	// Fixable is missing and still missing: doctor always, install only when a fix
+	// could not be applied.
+	Fixable int
+	// Manual is waiting on a person. Reported, never a failure.
+	Manual int
+	// Unverified could not be checked. Not a failure either — see KindUnverified.
+	Unverified int
+}
+
+// NeedsAttention reports whether anything is actually wrong, as opposed to outstanding.
+func (r Result) NeedsAttention() bool { return r.Failed > 0 || r.Fixable > 0 }
+
+// Complete reports whether there is nothing left to do at all.
+func (r Result) Complete() bool { return !r.NeedsAttention() && r.Manual == 0 }
+
+// Run checks every step in order, applying fixes when apply is set.
+func Run(ctx context.Context, steps []Step, apply bool, w io.Writer) Result {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	problems := 0
+	var res Result
 	var manual []Step
 	var notes []string
 
@@ -107,7 +130,7 @@ func Run(ctx context.Context, steps []Step, apply bool, w io.Writer) int {
 			msg, err := s.Fix(ctx)
 			if err != nil {
 				fmt.Fprintf(tw, "  %s\t%s\t%s\n", KindFailed.label(), s.Name(), err)
-				problems++
+				res.Failed++
 				continue
 			}
 			fmt.Fprintf(tw, "  %s\t%s\t%s\n", KindOK.label(), s.Name(), msg)
@@ -116,10 +139,14 @@ func Run(ctx context.Context, steps []Step, apply bool, w io.Writer) int {
 
 		fmt.Fprintf(tw, "  %s\t%s\t%s\n", state.Kind.label(), s.Name(), state.Summary)
 		switch state.Kind {
-		case KindFixable, KindFailed:
-			problems++
+		case KindFixable:
+			res.Fixable++
+		case KindFailed:
+			res.Failed++
+		case KindUnverified:
+			res.Unverified++
 		case KindManual:
-			problems++
+			res.Manual++
 			manual = append(manual, s)
 			notes = append(notes, state.Instructions)
 		}
@@ -132,7 +159,7 @@ func Run(ctx context.Context, steps []Step, apply bool, w io.Writer) int {
 		}
 		fmt.Fprintf(w, "\n%s — this one is yours:\n%s\n", s.Name(), indent(notes[i]))
 	}
-	return problems
+	return res
 }
 
 func indent(s string) string {

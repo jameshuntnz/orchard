@@ -185,8 +185,14 @@ orchard doctor
 ```
 
 `doctor` runs exactly the checks `install` acts on, so it cannot drift into a second
-opinion. It exits non-zero when something needs attention. A check that cannot run reports
-as unverified rather than green — reporting green on an unknown is worse than reporting
+opinion.
+
+**Exit status distinguishes broken from outstanding.** Non-zero means something is wrong
+or missing; a step waiting on a person — joining the tailnet, applying the firewall
+anchor — is reported and leaves the status zero. An install that did everything it could
+has not failed, and treating it as failure makes the command unusable from a script that
+goes on to do the next thing. A check that cannot run reports as unverified rather than
+green, and does not count either: reporting green on an unknown is worse than reporting
 nothing.
 
 ### From another machine
