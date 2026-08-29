@@ -119,7 +119,7 @@ func serve(args []string) error {
 			Hostname: cfg.Hostname,
 			Dir:      cfg.StateDir + "/" + config.TSNetSubdir,
 			AuthKey:  os.Getenv("TS_AUTHKEY"),
-			Logf:     func(format string, a ...any) { log.Debug("tsnet: " + fmt.Sprintf(format, a...)) },
+			Logf:     tsnetLogf(log),
 		}
 		defer ts.Close()
 
@@ -215,6 +215,21 @@ func serve(args []string) error {
 		_ = upload.Shutdown(shutdownCtx)
 	}
 	return nil
+}
+
+// tsnetLogf routes tsnet's chatter to Debug, which the default level drops, with one
+// exception: on first run — no TS_AUTHKEY, no node key in the state directory — the only
+// way to join the tailnet arrives through this callback as a login URL. Losing it leaves a
+// service that has started, logged nothing, and is waiting for something no one can see.
+func tsnetLogf(log *slog.Logger) func(string, ...any) {
+	return func(format string, a ...any) {
+		msg := strings.TrimSpace(fmt.Sprintf(format, a...))
+		if strings.Contains(msg, "login.tailscale.com") || strings.Contains(msg, "To authenticate") {
+			log.Warn("tailscale login required: open this URL to join the tailnet", "detail", msg)
+			return
+		}
+		log.Debug("tsnet: " + msg)
+	}
 }
 
 // ageSweeper is the backstop for a consumer that stops calling in. It is off unless
