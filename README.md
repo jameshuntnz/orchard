@@ -40,6 +40,7 @@ Environment only; no config file.
 | `ORCHARD_HOSTNAME` | no | tsnet node name (default `orchard`) |
 | `ORCHARD_BASE_URL` | no | External base URL; derived from the tsnet name if unset |
 | `ORCHARD_UPLOAD_ADDR` | no | Bind address for the CI upload listener, e.g. `0.0.0.0:8477`. Unset disables it |
+| `ORCHARD_UPLOAD_ALLOW` | with the listener | CIDRs allowed to use it, or `any`. Required whenever the listener is bound |
 | `ORCHARD_MAX_UPLOAD_MB` | no | Upload cap (default 512) |
 | `ORCHARD_MAX_BUILD_AGE_DAYS` | no | Age fallback; unset disables it |
 | `TS_AUTHKEY` | no | Tailscale auth key, for unattended first run |
@@ -59,6 +60,29 @@ Absolute URLs always come from `ORCHARD_BASE_URL`, never from the request, so a 
 published through the gateway still gets a manifest addressed at the `ts.net` name — which
 is where the phone will fetch it. CI uses whichever route works for it and the artefact is
 identical either way.
+
+### Restricting the upload listener
+
+The upload listener is plain HTTP, so its bearer token crosses the wire in cleartext.
+Bound to `0.0.0.0` it answers to every network the host is on — including the LAN, and the
+tailnet it was specifically not meant to serve.
+
+Binding it to the guest bridge instead does not work: virtualisation creates and destroys
+those interfaces with the guests, so the address is usually absent when the service starts.
+The restriction is therefore a source allowlist, and it is **required** whenever the
+listener is bound:
+
+```
+ORCHARD_UPLOAD_ADDR=0.0.0.0:8477
+ORCHARD_UPLOAD_ALLOW=127.0.0.1/32,192.168.64.0/18,172.16.0.0/12
+```
+
+A source outside it is refused before routing or token comparison, with the same response
+a bad token gets — telling an unexpected caller that it was refused for *being* unexpected
+hands it the one fact it did not have. The detail goes to the log instead.
+
+`any` disables the check. It has to be written explicitly, because an unrestricted
+plain-HTTP write listener should be a decision rather than an omission.
 
 ## API
 
@@ -164,8 +188,26 @@ identifier prominently for that reason. Giving test builds their own identifier
 (`com.example.app.adhoc`) avoids it, at the cost of a separate App ID and provisioning
 profile.
 
+## What Orchard assumes about its host
+
+One thing only: **that the host is its guests' default gateway.** That is true of any VM
+or container host, and `ORCHARD_URL` in the publish script bypasses even that for a runner
+already on the tailnet. Orchard has no knowledge of any particular CI system, and needs
+none — it serves what it is handed, over a route the job resolves for itself.
+
+The reverse also holds: nothing about a CI host needs to know Orchard exists. A host that
+default-denies egress to private address space already permits a job to reach its own
+gateway, because DHCP, DNS and package caches depend on that; Orchard just uses a port on
+a path that was already open.
+
 ## Development
 
 ```
 go test ./... -race
 ```
+
+CI runs on a self-hosted [Sapling](https://github.com/jameshuntnz/sapling) node, in a
+Linux container built from `.sapling/images/go/Dockerfile` — the bare runner has no C
+compiler, and `go test -race` links the race runtime through cgo. That is a dependency of
+this *repository's* pipeline, not of the service: `go test ./... -race` and
+`go build ./cmd/orchard` work anywhere with a Go toolchain.

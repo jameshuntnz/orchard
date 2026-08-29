@@ -8,7 +8,9 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"time"
 
@@ -37,6 +39,11 @@ type Server struct {
 	BaseURL   string
 	MaxUpload int64
 	Version   string
+
+	// UploadAllowed gates the upload listener by source address. Nil means every
+	// source is accepted, which is the tailnet listener's case — there, membership of
+	// the tailnet is already the boundary (DESIGN §10).
+	UploadAllowed func(netip.Addr) bool
 }
 
 // TailnetMux serves everything: browse pages, reads and writes. Reads are unauthenticated
@@ -63,7 +70,35 @@ func (s *Server) UploadMux() http.Handler {
 	mux := http.NewServeMux()
 	s.routeWrites(mux)
 	mux.HandleFunc("GET /healthz", s.handleHealth)
-	return mux
+	return s.restrictSource(mux)
+}
+
+// restrictSource rejects a request whose source address is not permitted, before any
+// routing or token comparison.
+//
+// The response says only that the caller is unauthorised. Telling an unexpected source
+// that it was refused for being an unexpected source hands it the one fact it did not
+// have; the detail goes to the log, where the operator is.
+func (s *Server) restrictSource(next http.Handler) http.Handler {
+	if s.UploadAllowed == nil {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// RemoteAddr only. A forwarded-for header is a claim by the caller, and there
+		// is no proxy in front of this listener to make it anything else.
+		host, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err != nil {
+			host = r.RemoteAddr
+		}
+		addr, err := netip.ParseAddr(host)
+		if err != nil || !s.UploadAllowed(addr) {
+			s.Log.Warn("upload listener refused a source outside the allowlist",
+				"source", host, "method", r.Method, "path", r.URL.Path)
+			writeErr(w, http.StatusUnauthorized, "unauthorized", "invalid bearer token")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) routeWrites(mux *http.ServeMux) {

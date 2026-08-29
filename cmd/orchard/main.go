@@ -83,15 +83,17 @@ func provision(args []string, apply bool) error {
 	svcUser := fs.String("user", defaultServiceUser(), "account the service runs as")
 	hostname := fs.String("hostname", install.DefaultHostname, "tsnet node name")
 	uploadAddr := fs.String("upload-addr", "", "bind address for the CI upload listener, e.g. 0.0.0.0:8477")
+	uploadAllow := fs.String("upload-allow", install.DefaultUploadAllow, "CIDRs allowed to use the upload listener")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
 	plan := install.Plan{
-		Prefix:     *prefix,
-		User:       *svcUser,
-		Hostname:   *hostname,
-		UploadAddr: *uploadAddr,
+		Prefix:      *prefix,
+		User:        *svcUser,
+		Hostname:    *hostname,
+		UploadAddr:  *uploadAddr,
+		UploadAllow: *uploadAllow,
 	}
 
 	fmt.Printf("orchard %s %s\n  prefix %s, user %s\n\n", name, buildVersion(), plan.Prefix, plan.User)
@@ -245,6 +247,7 @@ func serve(args []string) error {
 		if err != nil {
 			return fmt.Errorf("listen for uploads: %w", err)
 		}
+		srv.UploadAllowed = cfg.AllowsUpload
 		upload = &http.Server{
 			Handler:           api.Logging(srv.UploadMux(), log, "upload", nil),
 			ReadHeaderTimeout: 10 * time.Second,
@@ -253,7 +256,18 @@ func serve(args []string) error {
 			IdleTimeout:       2 * time.Minute,
 		}
 		go func() { errs <- upload.Serve(ln) }()
-		log.Info("upload listener bound: writes only, bearer token required", "addr", cfg.UploadAddr)
+
+		if cfg.UploadAllowAny {
+			log.Warn("upload listener accepts every source address: ORCHARD_UPLOAD_ALLOW is \"any\"",
+				"addr", cfg.UploadAddr)
+		} else {
+			allowed := make([]string, 0, len(cfg.UploadAllow))
+			for _, p := range cfg.UploadAllow {
+				allowed = append(allowed, p.String())
+			}
+			log.Info("upload listener bound: writes only, bearer token required",
+				"addr", cfg.UploadAddr, "allow", allowed)
+		}
 	}
 
 	if cfg.MaxBuildAge > 0 {

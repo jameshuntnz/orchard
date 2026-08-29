@@ -154,11 +154,20 @@ type Plan struct {
 	Hostname string
 	// UploadAddr binds the CI upload listener; empty leaves it disabled.
 	UploadAddr string
+	// UploadAllow is the source allowlist for that listener. The default covers
+	// loopback and the range macOS and Linux virtualisation hand to guest bridges,
+	// which is who the listener is for — and excludes the host's own LAN address and
+	// its tailnet address, which are the two ways it would otherwise be reachable
+	// from off the machine.
+	UploadAllow string
 }
 
 const (
 	DefaultPrefix   = "/usr/local/orchard"
 	DefaultHostname = "orchard"
+	// DefaultUploadAllow is deliberately not "any": an unrestricted plain-HTTP write
+	// listener should be something an operator asks for.
+	DefaultUploadAllow = "127.0.0.1/32,192.168.64.0/18,172.16.0.0/12"
 )
 
 func (p Plan) BinDir() string   { return filepath.Join(p.Prefix, "bin") }

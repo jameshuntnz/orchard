@@ -8,6 +8,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"testing"
 
@@ -525,4 +526,77 @@ func TestUntrustedMetadataIsEscaped(t *testing.T) {
 			t.Errorf("%s rendered untrusted metadata unescaped", path)
 		}
 	}
+}
+
+// The upload listener is bound beyond the tailnet, so a source allowlist gates it
+// before routing or token comparison (DESIGN §15).
+func TestUploadListenerSourceAllowlist(t *testing.T) {
+	h := newHarness(t)
+	// httptest connects over loopback, so this is what a permitted source looks like.
+	h.UploadAllowed = func(a netip.Addr) bool { return a.Unmap().IsLoopback() }
+	h.upload.Close()
+	h.upload = httptest.NewServer(h.Server.UploadMux())
+	t.Cleanup(h.upload.Close)
+
+	ct, b := multipartBody(t, ipatest.Binary(t, "com.example.app"), defaultMeta("com.example.app"))
+	resp := h.do(t, h.upload, http.MethodPost, "/api/v1/apps/example/builds/allowed", token, ct, b)
+	wantStatus(t, resp, http.StatusOK)
+}
+
+func TestUploadListenerRefusesDisallowedSource(t *testing.T) {
+	h := newHarness(t)
+	h.UploadAllowed = func(netip.Addr) bool { return false }
+	h.upload.Close()
+	h.upload = httptest.NewServer(h.Server.UploadMux())
+	t.Cleanup(h.upload.Close)
+
+	ct, b := multipartBody(t, ipatest.Binary(t, "com.example.app"), defaultMeta("com.example.app"))
+	resp := h.do(t, h.upload, http.MethodPost, "/api/v1/apps/example/builds/blocked", token, ct, b)
+	wantError(t, resp, http.StatusUnauthorized, "unauthorized")
+
+	// Nothing was written.
+	if _, err := h.Store.Get("example", "blocked"); err == nil {
+		t.Error("a refused source still published a build")
+	}
+
+	// Even /healthz is behind the allowlist on this listener: a source that may not
+	// publish has no business enumerating the service either.
+	resp = h.do(t, h.upload, http.MethodGet, "/healthz", token, "", nil)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("healthz on the upload listener = %d, want 401 for a refused source", resp.StatusCode)
+	}
+}
+
+// The refusal must not tell an unexpected source why it was refused — that hands it the
+// one fact it did not already have.
+func TestUploadRefusalIsIndistinguishableFromABadToken(t *testing.T) {
+	h := newHarness(t)
+	ct, b := multipartBody(t, ipatest.Binary(t, "com.example.app"), defaultMeta("com.example.app"))
+	badToken := h.do(t, h.upload, http.MethodPost, "/api/v1/apps/example/builds/x", "wrong-token", ct, b)
+	fromBadToken := decode[errorBody](t, badToken)
+
+	h.UploadAllowed = func(netip.Addr) bool { return false }
+	h.upload.Close()
+	h.upload = httptest.NewServer(h.Server.UploadMux())
+	t.Cleanup(h.upload.Close)
+
+	ct, b = multipartBody(t, ipatest.Binary(t, "com.example.app"), defaultMeta("com.example.app"))
+	blocked := h.do(t, h.upload, http.MethodPost, "/api/v1/apps/example/builds/x", token, ct, b)
+	fromBlocked := decode[errorBody](t, blocked)
+
+	if fromBlocked != fromBadToken {
+		t.Errorf("a blocked source gets %+v but a bad token gets %+v; the two must be indistinguishable",
+			fromBlocked, fromBadToken)
+	}
+}
+
+// The tailnet listener is not gated by the allowlist: there, membership of the tailnet
+// is already the boundary (DESIGN §10).
+func TestAllowlistDoesNotAffectTheTailnetListener(t *testing.T) {
+	h := newHarness(t)
+	h.UploadAllowed = func(netip.Addr) bool { return false }
+
+	wantStatus(t, h.publish(t, "example", "main", "com.example.app"), http.StatusOK)
+	wantStatus(t, h.get(t, "/a/example/b/main"), http.StatusOK)
+	wantStatus(t, h.get(t, "/api/v1/apps"), http.StatusOK)
 }

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,7 +15,8 @@ func setEnv(t *testing.T, kv map[string]string) {
 	t.Helper()
 	for _, k := range []string{
 		"ORCHARD_STATE_DIR", "ORCHARD_TOKEN", "ORCHARD_HOSTNAME", "ORCHARD_BASE_URL",
-		"ORCHARD_UPLOAD_ADDR", "ORCHARD_MAX_UPLOAD_MB", "ORCHARD_MAX_BUILD_AGE_DAYS",
+		"ORCHARD_UPLOAD_ADDR", "ORCHARD_UPLOAD_ALLOW", "ORCHARD_MAX_UPLOAD_MB",
+		"ORCHARD_MAX_BUILD_AGE_DAYS",
 	} {
 		t.Setenv(k, "")
 		os.Unsetenv(k)
@@ -146,5 +148,101 @@ func TestPrepareRefusesUnwritable(t *testing.T) {
 
 	if err := Prepare(dir); err == nil {
 		t.Error("Prepare accepted an unwritable state directory")
+	}
+}
+
+// The upload listener is plain HTTP carrying a bearer token in cleartext. Binding it
+// without saying who may reach it is the omission this refuses to make silently.
+func TestUploadAllowRequiredWithListener(t *testing.T) {
+	setEnv(t, map[string]string{
+		"ORCHARD_STATE_DIR":   t.TempDir(),
+		"ORCHARD_TOKEN":       strings.Repeat("t", minTokenLen),
+		"ORCHARD_UPLOAD_ADDR": "0.0.0.0:8477",
+	})
+	_, err := Load()
+	if err == nil {
+		t.Fatal("Load accepted an upload listener with no allowlist")
+	}
+	if !strings.Contains(err.Error(), "ORCHARD_UPLOAD_ALLOW") {
+		t.Errorf("error = %q, want it to name the variable", err)
+	}
+}
+
+func TestUploadAllowRejectedWithoutListener(t *testing.T) {
+	setEnv(t, map[string]string{
+		"ORCHARD_STATE_DIR":    t.TempDir(),
+		"ORCHARD_TOKEN":        strings.Repeat("t", minTokenLen),
+		"ORCHARD_UPLOAD_ALLOW": "127.0.0.1",
+	})
+	if _, err := Load(); err == nil {
+		t.Error("Load accepted an allowlist with no listener to apply it to")
+	}
+}
+
+func TestUploadAllowMatching(t *testing.T) {
+	setEnv(t, map[string]string{
+		"ORCHARD_STATE_DIR":    t.TempDir(),
+		"ORCHARD_TOKEN":        strings.Repeat("t", minTokenLen),
+		"ORCHARD_UPLOAD_ADDR":  "0.0.0.0:8477",
+		"ORCHARD_UPLOAD_ALLOW": "127.0.0.1, 192.168.64.0/18",
+	})
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := map[string]bool{
+		"127.0.0.1":           true,
+		"192.168.64.1":        true,  // a bridge gateway
+		"192.168.64.7":        true,  // a guest on it
+		"192.168.99.3":        true,  // a bridge that renumbered
+		"::ffff:192.168.64.7": true,  // the same guest, v4-mapped
+		"192.168.0.145":       false, // the host's own LAN address
+		"192.168.0.50":        false, // anything else on the LAN
+		"100.66.217.76":       false, // a tailnet node
+		"::1":                 false, // not listed, so not allowed
+	}
+	for s, want := range tests {
+		addr, err := netip.ParseAddr(s)
+		if err != nil {
+			t.Fatalf("%s: %v", s, err)
+		}
+		if got := c.AllowsUpload(addr); got != want {
+			t.Errorf("AllowsUpload(%s) = %v, want %v", s, got, want)
+		}
+	}
+}
+
+// An unrestricted listener must be a decision, and a visible one.
+func TestUploadAllowAny(t *testing.T) {
+	setEnv(t, map[string]string{
+		"ORCHARD_STATE_DIR":    t.TempDir(),
+		"ORCHARD_TOKEN":        strings.Repeat("t", minTokenLen),
+		"ORCHARD_UPLOAD_ADDR":  "0.0.0.0:8477",
+		"ORCHARD_UPLOAD_ALLOW": "any",
+	})
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.UploadAllowAny {
+		t.Fatal("UploadAllowAny not set")
+	}
+	if !c.AllowsUpload(netip.MustParseAddr("203.0.113.9")) {
+		t.Error("any did not allow an arbitrary source")
+	}
+}
+
+func TestUploadAllowRejectsGarbage(t *testing.T) {
+	for _, bad := range []string{"not-an-address", "192.168.0.0/99", "192.168.0.1/", ","} {
+		setEnv(t, map[string]string{
+			"ORCHARD_STATE_DIR":    t.TempDir(),
+			"ORCHARD_TOKEN":        strings.Repeat("t", minTokenLen),
+			"ORCHARD_UPLOAD_ADDR":  "0.0.0.0:8477",
+			"ORCHARD_UPLOAD_ALLOW": bad,
+		})
+		if _, err := Load(); err == nil {
+			t.Errorf("Load accepted ORCHARD_UPLOAD_ALLOW=%q", bad)
+		}
 	}
 }

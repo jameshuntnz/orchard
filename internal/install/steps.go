@@ -172,9 +172,16 @@ func (s configStep) Fix(context.Context) (string, error) {
 	fmt.Fprintf(&b, "ORCHARD_TOKEN=%s\n", token)
 	fmt.Fprintf(&b, "ORCHARD_HOSTNAME=%s\n", s.plan.Hostname)
 	if s.plan.UploadAddr != "" {
+		allow := s.plan.UploadAllow
+		if allow == "" {
+			allow = DefaultUploadAllow
+		}
 		b.WriteString("\n# Writes only, bearer token required, nothing that serves a build or a page.\n")
-		b.WriteString("# Restrict this to your job subnets at the host firewall.\n")
+		b.WriteString("# It is plain HTTP, so the token crosses the wire in cleartext: the allowlist\n")
+		b.WriteString("# below is what keeps it to guests on this host rather than the whole LAN and\n")
+		b.WriteString("# the whole tailnet. Set it to \"any\" only deliberately.\n")
 		fmt.Fprintf(&b, "ORCHARD_UPLOAD_ADDR=%s\n", s.plan.UploadAddr)
+		fmt.Fprintf(&b, "ORCHARD_UPLOAD_ALLOW=%s\n", allow)
 	}
 	b.WriteString("\n# ORCHARD_BASE_URL is unset, so it is derived from the tsnet name.\n")
 	b.WriteString("# TS_AUTHKEY is unset: on first run orchard logs a login URL instead.\n")
