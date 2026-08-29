@@ -1,19 +1,34 @@
-name: ci
+name: CI
 
+# Main and pull requests. Orchard is pure Go — the macOS-specific parts are deployment,
+# not code — so this runs on a Linux container rather than occupying one of the node's
+# two macOS VM slots.
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
+  check:
+    runs-on: [self-hosted, linux, arm64]
+    # A self-hosted job queues indefinitely when no runner matches, so cap it rather
+    # than letting a run hang until someone notices.
+    timeout-minutes: 20
+
     steps:
       - uses: actions/checkout@v4
 
+      # No image: label, so this is the default runner agent rather than ubuntu-latest.
+      # setup-go brings its own toolchain, tracking go.mod so the version never drifts
+      # from what the module declares.
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -37,3 +52,10 @@ jobs:
             GOOS=${target%/*} GOARCH=${target#*/} CGO_ENABLED=0 \
               go build -o /dev/null ./cmd/orchard
           done
+
+      - name: shell scripts
+        run: |
+          for s in scripts/*.sh deploy/*.sh; do
+            bash -n "$s" || exit 1
+          done
+          echo "shell syntax ok"
