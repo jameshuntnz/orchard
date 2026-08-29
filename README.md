@@ -43,6 +43,12 @@ Environment only; no config file.
 | `ORCHARD_UPLOAD_ALLOW` | with the listener | CIDRs allowed to use it, or `any`. Required whenever the listener is bound |
 | `ORCHARD_MAX_UPLOAD_MB` | no | Upload cap (default 512) |
 | `ORCHARD_MAX_BUILD_AGE_DAYS` | no | Age fallback; unset disables it |
+| `ORCHARD_UPDATE_ENABLED` | no | Self-update on/off (default `true`; always off in a container) |
+| `ORCHARD_UPDATE_REPO` | no | Where releases come from, `owner/repo`. Overriding it changes what the service will execute |
+| `ORCHARD_UPDATE_CHANNEL` | no | Which releases are eligible (default `stable`; prereleases ignored) |
+| `ORCHARD_UPDATE_INTERVAL` | no | How often to check (default `6h`) |
+| `ORCHARD_UPDATE_TOKEN` | for a private repo | Credential for the release API |
+| `ORCHARD_IN_CONTAINER` | no | Set by the official image; disables self-update |
 | `TS_AUTHKEY` | no | Tailscale auth key, for unattended first run |
 
 ## Two listeners
@@ -204,6 +210,50 @@ phone — replacing it, and taking its local data with it. The install page show
 identifier prominently for that reason. Giving test builds their own identifier
 (`com.example.app.adhoc`) avoids it, at the cost of a separate App ID and provisioning
 profile.
+
+## Updating itself
+
+Running as a binary, Orchard updates itself. The alternative is a person with shell access
+for every patch release, which in practice means updates do not happen.
+
+On a timer it checks the release feed, downloads the artifact for its own platform,
+verifies it against the `SHA256SUMS` published alongside, writes a marker, moves the
+current binary to `orchard.prev`, installs the new one, drains and exits. The supervisor
+starts what is now in place. That last step is the whole mechanism: it needs no privilege
+beyond writing to the install directory the service already owns, so there is no `sudo`,
+no root daemon and no `launchctl` permission to arrange.
+
+**Rollback is automatic.** On startup the new binary finds the marker and runs a
+self-check — bind a listener, read the state directory, render a page. On failure it
+restores `orchard.prev`, keeps the failed binary as `orchard.failed` for evidence, and
+exits so the supervisor brings the previous version back. A crash loop in a bad release
+therefore corrects itself. This is only safe because nothing rewrites state on disk during
+an update, so the previous binary still understands everything it left behind.
+
+A publish in flight defers the update to the next check rather than interrupting a
+transfer that may have taken minutes.
+
+```bash
+orchard update --check              # what is available
+orchard update                      # fetch, verify, install
+orchard update --version 1.2.0      # a specific release, older ones included
+orchard update --rollback           # put the previous binary back
+```
+
+**What this trusts.** The service downloads something and then executes it, so the
+download is the security boundary. Three things guard it: the release is fetched over
+HTTPS from the configured repository only, the archive is checked against checksums
+published alongside it, and **a release without checksums is refused rather than installed
+unverified**. What is *not* guarded: the checksums come from the same place as the archive,
+so this detects corruption and interrupted downloads, not a compromised repository.
+Signing the artifacts and verifying a pinned public key would close that, and is the
+obvious next step.
+
+Releases are cut by tagging:
+
+```bash
+git tag v0.1.0 && git push origin v0.1.0
+```
 
 ## What Orchard assumes about its host
 

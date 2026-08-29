@@ -49,6 +49,11 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Counted from here rather than from the first byte, so an update deciding whether
+	// to defer sees a publish that has started but not yet transferred anything.
+	s.publishing.Add(1)
+	defer s.publishing.Add(-1)
+
 	// An unbounded multipart read on a shared host is a trivial disk-fill (DESIGN §15).
 	r.Body = http.MaxBytesReader(w, r.Body, s.MaxUpload)
 

@@ -1,0 +1,96 @@
+name: Release
+
+# Tagged releases produce the artifacts the self-updater consumes. There is no schedule
+# and no push trigger: a release is a deliberate act, and the service updates itself on a
+# timer from whatever is published here.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release, without the leading v (e.g. 0.1.0)'
+        required: true
+        type: string
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: [self-hosted, linux, arm64, image:go]
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-${{ hashFiles('go.sum') }}
+          restore-keys: go-
+
+      - name: Resolve version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [ -n "$INPUT_VERSION" ]; then
+            version="${INPUT_VERSION#v}"
+          else
+            version="${GITHUB_REF_NAME#v}"
+          fi
+          # The updater compares versions, so a malformed one would be silently
+          # unorderable rather than obviously wrong.
+          if ! printf '%s' "$version" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::'$version' is not a semantic version"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "releasing $version"
+
+      - name: Test before publishing anything
+        run: go test ./... -race
+
+      - name: Build release artifacts
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          mkdir -p dist
+          for target in darwin/arm64 linux/amd64 linux/arm64; do
+            goos="${target%/*}"; goarch="${target#*/}"
+            # A tarball holds the binary and nothing else, so the updater's extraction
+            # has exactly one thing to find.
+            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build \
+              -trimpath -ldflags "-s -w -X main.version=${VERSION}" \
+              -o "dist/orchard" ./cmd/orchard
+            tar -czf "dist/orchard_${VERSION}_${goos}_${goarch}.tar.gz" -C dist orchard
+            rm dist/orchard
+          done
+
+          # A release without checksums is refused by the updater rather than installed
+          # unverified, so this file is not optional.
+          cd dist && sha256sum orchard_*.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if gh release view "v${VERSION}" >/dev/null 2>&1; then
+            echo "::error::v${VERSION} already exists; releases are immutable because the updater trusts their checksums"
+            exit 1
+          fi
+          gh release create "v${VERSION}" \
+            --title "v${VERSION}" \
+            --generate-notes \
+            dist/orchard_*.tar.gz dist/SHA256SUMS

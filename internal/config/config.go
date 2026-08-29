@@ -45,6 +45,23 @@ type Config struct {
 	// UploadAllowAny records an explicit opt-out, so an unrestricted listener is always
 	// somebody's decision rather than an omission.
 	UploadAllowAny bool
+
+	Update UpdateConfig
+}
+
+// UpdateConfig controls self-update (DESIGN §14.1).
+type UpdateConfig struct {
+	Enabled  bool
+	Repo     string
+	Channel  string
+	Interval time.Duration
+	// Token authenticates against the release API. A public repository needs none.
+	Token string
+	// InContainer disables self-update regardless of Enabled. The image tag is the
+	// unit of deployment there: a process rewriting its own binary inside a container
+	// produces a running service that no longer matches its image, and the change
+	// vanishes on the next restart (DESIGN §13.2).
+	InContainer bool
 }
 
 // Load reads the environment. It does not touch the filesystem; call Prepare for that.
@@ -99,7 +116,75 @@ func Load() (*Config, error) {
 	}
 	c.MaxBuildAge = time.Duration(days) * 24 * time.Hour
 
+	if err := c.parseUpdate(); err != nil {
+		return nil, err
+	}
+
 	return c, nil
+}
+
+func (c *Config) parseUpdate() error {
+	c.Update = UpdateConfig{
+		Enabled:     true,
+		Repo:        os.Getenv("ORCHARD_UPDATE_REPO"),
+		Channel:     envOr("ORCHARD_UPDATE_CHANNEL", "stable"),
+		Interval:    6 * time.Hour,
+		Token:       os.Getenv("ORCHARD_UPDATE_TOKEN"),
+		InContainer: inContainer(),
+	}
+
+	if v := os.Getenv("ORCHARD_UPDATE_ENABLED"); v != "" {
+		enabled, err := strconv.ParseBool(v)
+		if err != nil {
+			return fmt.Errorf("ORCHARD_UPDATE_ENABLED: %w", err)
+		}
+		c.Update.Enabled = enabled
+	}
+	if v := os.Getenv("ORCHARD_UPDATE_INTERVAL"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return fmt.Errorf("ORCHARD_UPDATE_INTERVAL: %w", err)
+		}
+		if d < time.Minute {
+			return errors.New("ORCHARD_UPDATE_INTERVAL must be at least 1m")
+		}
+		c.Update.Interval = d
+	}
+	if c.Update.Repo != "" && !strings.Contains(c.Update.Repo, "/") {
+		return errors.New("ORCHARD_UPDATE_REPO must be owner/repo")
+	}
+	return nil
+}
+
+// inContainer decides whether this is a container.
+//
+// The official image sets the variable and that is authoritative. The probes are a
+// fallback so a hand-rolled image that forgets it still gets the right behaviour rather
+// than a self-updating container (DESIGN §13.2).
+func inContainer() bool {
+	if v := os.Getenv("ORCHARD_IN_CONTAINER"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			return b
+		}
+		return true
+	}
+	if _, err := os.Stat("/.dockerenv"); err == nil {
+		return true
+	}
+	if raw, err := os.ReadFile("/proc/1/cgroup"); err == nil {
+		body := string(raw)
+		for _, marker := range []string{"docker", "containerd", "kubepods", "libpod", "lxc"} {
+			if strings.Contains(body, marker) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// SelfUpdates reports whether the service should update itself.
+func (c *Config) SelfUpdates() bool {
+	return c.Update.Enabled && !c.Update.InContainer
 }
 
 // Prepare creates the state directory if it is absent and proves it is writable now,

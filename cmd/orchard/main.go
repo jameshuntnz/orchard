@@ -2,6 +2,8 @@
 package main
 
 import (
+	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"flag"
@@ -12,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"os/user"
+	"path/filepath"
 	"runtime/debug"
 	"strings"
 	"syscall"
@@ -23,6 +26,7 @@ import (
 	"github.com/jameshuntnz/orchard/internal/config"
 	"github.com/jameshuntnz/orchard/internal/install"
 	"github.com/jameshuntnz/orchard/internal/store"
+	"github.com/jameshuntnz/orchard/internal/update"
 	"github.com/jameshuntnz/orchard/internal/web"
 )
 
@@ -52,6 +56,11 @@ func main() {
 			fmt.Fprintln(os.Stderr, "orchard:", err)
 			os.Exit(1)
 		}
+	case "update":
+		if err := updateCmd(args); err != nil {
+			fmt.Fprintln(os.Stderr, "orchard:", err)
+			os.Exit(1)
+		}
 	case "firewall":
 		if err := firewall(args); err != nil {
 			fmt.Fprintln(os.Stderr, "orchard:", err)
@@ -60,7 +69,7 @@ func main() {
 	case "version":
 		fmt.Println(buildVersion())
 	default:
-		fmt.Fprintf(os.Stderr, "orchard: unknown command %q (want: serve, install, doctor, firewall, version)\n", cmd)
+		fmt.Fprintf(os.Stderr, "orchard: unknown command %q (want: serve, install, doctor, update, firewall, version)\n", cmd)
 		os.Exit(2)
 	}
 }
@@ -111,6 +120,94 @@ func provision(args []string, apply bool) error {
 	if apply {
 		fmt.Printf("Done. The write token is in %s\n", plan.EnvFile())
 	}
+	return nil
+}
+
+// updateCmd is the same logic the timer runs, on demand — for when waiting six hours is
+// not acceptable (DESIGN §14.1).
+func updateCmd(args []string) error {
+	fs := flag.NewFlagSet("update", flag.ExitOnError)
+	check := fs.Bool("check", false, "report what is available without installing it")
+	rollback := fs.Bool("rollback", false, "put the previous binary back")
+	want := fs.String("version", "", "install this version instead of the newest")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	binary, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	if resolved, err := filepath.EvalSymlinks(binary); err == nil {
+		binary = resolved
+	}
+
+	if *rollback {
+		if err := update.Rollback(binary); err != nil {
+			return err
+		}
+		fmt.Println("restored the previous binary; restart the service to run it")
+		return nil
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		// Updating needs only the update settings, but Load is the one place that
+		// reads them, and a host with a broken configuration should not be quietly
+		// replacing its own binary either.
+		return err
+	}
+	if cfg.Update.InContainer {
+		return errors.New("this is a container: the image tag is the unit of deployment, so updating means pulling a new tag")
+	}
+
+	u, err := update.New(update.Config{
+		Enabled:  cfg.Update.Enabled,
+		Repo:     cfg.Update.Repo,
+		Channel:  cfg.Update.Channel,
+		Interval: cfg.Update.Interval,
+		Token:    cfg.Update.Token,
+	}, buildVersion(), binary)
+	if err != nil {
+		return err
+	}
+
+	ctx := context.Background()
+	var rel update.Release
+
+	if *want != "" {
+		v, err := update.ParseVersion(*want)
+		if err != nil {
+			return err
+		}
+		if rel, err = u.Find(ctx, v); err != nil {
+			return err
+		}
+	} else {
+		rel, err = u.Latest(ctx)
+		if errors.Is(err, update.ErrNoUpdate) {
+			fmt.Printf("%s is the newest on the %s channel\n", u.Current(), cfg.Update.Channel)
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+	}
+
+	if *check {
+		fmt.Printf("running %s, available %s\n", u.Current(), rel.Version)
+		return nil
+	}
+
+	fmt.Printf("fetching %s\n", update.AssetName(rel.Version))
+	body, err := u.Fetch(ctx, rel)
+	if err != nil {
+		return err
+	}
+	if err := u.Install(body, rel.Version); err != nil {
+		return err
+	}
+	fmt.Printf("installed %s; restart the service to run it\n", rel.Version)
 	return nil
 }
 
@@ -194,6 +291,15 @@ func serve(args []string) error {
 	renderer, err := web.New()
 	if err != nil {
 		return err
+	}
+
+	// Before anything is served: if an update installed a new binary and has not yet
+	// been proven, prove it or put the old one back.
+	if binary, err := os.Executable(); err == nil {
+		if resolved, err := filepath.EvalSymlinks(binary); err == nil {
+			binary = resolved
+		}
+		verifyUpdate(binary, st, renderer, log)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -326,6 +432,38 @@ func serve(args []string) error {
 		go ageSweeper(ctx, st, cfg.MaxBuildAge, log)
 	}
 
+	switch {
+	case *devAddr != "":
+		// Development mode replaces the binary's own idea of where it lives.
+	case cfg.Update.InContainer:
+		log.Info("self-update disabled: this is a container, so the image tag is the unit of deployment")
+	case !cfg.Update.Enabled:
+		log.Info("self-update disabled by configuration")
+	default:
+		binary, err := os.Executable()
+		if err != nil {
+			log.Warn("self-update disabled: cannot determine the running binary", "err", err)
+			break
+		}
+		if resolved, err := filepath.EvalSymlinks(binary); err == nil {
+			binary = resolved
+		}
+		u, err := update.New(update.Config{
+			Enabled:  cfg.Update.Enabled,
+			Repo:     cfg.Update.Repo,
+			Channel:  cfg.Update.Channel,
+			Interval: cfg.Update.Interval,
+			Token:    cfg.Update.Token,
+		}, buildVersion(), binary)
+		if err != nil {
+			log.Warn("self-update disabled", "err", err)
+			break
+		}
+		log.Info("self-update enabled", "repo", cmp.Or(cfg.Update.Repo, update.DefaultRepo),
+			"channel", cfg.Update.Channel, "interval", cfg.Update.Interval.String())
+		go updateLoop(ctx, u, cfg.Update.Interval, srv.PublishesInFlight, log, stop)
+	}
+
 	select {
 	case err := <-errs:
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -356,6 +494,124 @@ func tsnetLogf(log *slog.Logger) func(string, ...any) {
 			return
 		}
 		log.Debug("tsnet: " + msg)
+	}
+}
+
+// verifyUpdate runs the self-check an update leaves behind, and puts the previous binary
+// back if it fails.
+//
+// This is what makes rollback automatic: a bad release corrects itself on the restart it
+// causes, instead of crash-looping until someone notices. It is viable only because
+// nothing rewrites state on disk during an update, so the previous binary still
+// understands everything it left behind (DESIGN §14.2).
+func verifyUpdate(binary string, st *store.Store, renderer *web.Renderer, log *slog.Logger) {
+	marker, pending := update.PendingMarker(binary)
+	if !pending {
+		return
+	}
+
+	if err := selfCheck(st, renderer); err != nil {
+		log.Error("self-check failed after update; rolling back",
+			"from", marker.PreviousVersion, "to", marker.NewVersion, "err", err)
+		if rbErr := update.Rollback(binary); rbErr != nil {
+			// Nothing else can be done from here, and continuing on a binary that
+			// just failed its own check would be worse than exiting.
+			log.Error("rollback failed", "err", rbErr)
+		}
+		os.Exit(1) // the supervisor starts what is now in place, which is the old one
+	}
+
+	if err := update.ClearMarker(binary); err != nil {
+		log.Warn("could not clear the update marker", "err", err)
+	}
+	log.Info("update verified", "from", marker.PreviousVersion, "to", marker.NewVersion)
+}
+
+// selfCheck is deliberately the three things §14.1 names: bind a listener, read the state
+// directory, render a page. Between them they exercise everything a release could break
+// badly enough to be worth reverting for.
+func selfCheck(st *store.Store, renderer *web.Renderer) error {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return fmt.Errorf("cannot bind a listener: %w", err)
+	}
+	ln.Close()
+
+	apps, err := st.ListApps()
+	if err != nil {
+		return fmt.Errorf("cannot read the state directory: %w", err)
+	}
+
+	var buf bytes.Buffer
+	if len(apps) > 0 && len(apps[0].Builds) > 0 {
+		return renderer.Install(&buf, web.InstallData{
+			App:         apps[0].ID,
+			Build:       apps[0].Builds[0],
+			PageURL:     "https://example.invalid/",
+			IPAURL:      "https://example.invalid/app.ipa",
+			ManifestURL: "https://example.invalid/manifest.plist",
+		})
+	}
+	// With no builds there is no install page to render, and the index is the most
+	// this can honestly exercise.
+	return renderer.Root(&buf, web.RootData{Apps: apps})
+}
+
+// updateLoop checks for a newer release on a timer and installs it.
+//
+// Exiting and letting the supervisor respawn is the whole mechanism: it needs no
+// privilege beyond writing to the install directory the service already owns, so there
+// is no sudo, no root daemon and no launchctl permission to arrange (DESIGN §14.1).
+func updateLoop(ctx context.Context, u *update.Updater, interval time.Duration,
+	inFlight func() int64, log *slog.Logger, done func()) {
+
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+
+		// An update that replaced the binary mid-publish would abort a transfer that
+		// may have taken minutes. Deferring to the next check costs at most one
+		// interval.
+		if inFlight() > 0 {
+			log.Info("deferring update check: a publish is in flight")
+			continue
+		}
+
+		rel, err := u.Latest(ctx)
+		if errors.Is(err, update.ErrNoUpdate) {
+			continue
+		}
+		if err != nil {
+			log.Warn("update check failed", "err", err)
+			continue
+		}
+
+		body, err := u.Fetch(ctx, rel)
+		if err != nil {
+			log.Error("refusing the update", "version", rel.Version.String(), "err", err)
+			continue
+		}
+
+		// Checked again: the download takes time, and a publish may have started
+		// during it.
+		if inFlight() > 0 {
+			log.Info("deferring install: a publish started during the download")
+			continue
+		}
+		if err := u.Install(body, rel.Version); err != nil {
+			log.Error("installing the update failed", "version", rel.Version.String(), "err", err)
+			continue
+		}
+
+		log.Warn("installed a new version; draining and exiting for the supervisor to start it",
+			"from", u.Current().String(), "to", rel.Version.String())
+		done()
+		return
 	}
 }
 

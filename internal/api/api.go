@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/netip"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/jameshuntnz/orchard/internal/store"
@@ -44,7 +45,14 @@ type Server struct {
 	// source is accepted, which is the tailnet listener's case — there, membership of
 	// the tailnet is already the boundary (DESIGN §10).
 	UploadAllowed func(netip.Addr) bool
+
+	// publishing counts uploads currently being received. An update that replaced the
+	// binary mid-publish would abort a transfer that may have taken minutes.
+	publishing atomic.Int64
 }
+
+// PublishesInFlight reports how many uploads are being received right now.
+func (s *Server) PublishesInFlight() int64 { return s.publishing.Load() }
 
 // TailnetMux serves everything: browse pages, reads and writes. Reads are unauthenticated
 // because tailnet membership is the boundary (DESIGN §10).

@@ -16,7 +16,9 @@ func setEnv(t *testing.T, kv map[string]string) {
 	for _, k := range []string{
 		"ORCHARD_STATE_DIR", "ORCHARD_TOKEN", "ORCHARD_HOSTNAME", "ORCHARD_BASE_URL",
 		"ORCHARD_UPLOAD_ADDR", "ORCHARD_UPLOAD_ALLOW", "ORCHARD_MAX_UPLOAD_MB",
-		"ORCHARD_MAX_BUILD_AGE_DAYS",
+		"ORCHARD_MAX_BUILD_AGE_DAYS", "ORCHARD_UPDATE_ENABLED", "ORCHARD_UPDATE_REPO",
+		"ORCHARD_UPDATE_CHANNEL", "ORCHARD_UPDATE_INTERVAL", "ORCHARD_UPDATE_TOKEN",
+		"ORCHARD_IN_CONTAINER",
 	} {
 		t.Setenv(k, "")
 		os.Unsetenv(k)
@@ -244,5 +246,70 @@ func TestUploadAllowRejectsGarbage(t *testing.T) {
 		if _, err := Load(); err == nil {
 			t.Errorf("Load accepted ORCHARD_UPLOAD_ALLOW=%q", bad)
 		}
+	}
+}
+
+func TestUpdateDefaults(t *testing.T) {
+	setEnv(t, map[string]string{
+		"ORCHARD_STATE_DIR": t.TempDir(),
+		"ORCHARD_TOKEN":     strings.Repeat("t", minTokenLen),
+	})
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.Update.Enabled {
+		t.Error("self-update should be on by default for the binary")
+	}
+	if c.Update.Channel != "stable" || c.Update.Interval != 6*time.Hour {
+		t.Errorf("update defaults = %+v", c.Update)
+	}
+}
+
+// A container's unit of deployment is the image tag, so a process rewriting its own
+// binary inside one is disabled regardless of the setting (DESIGN §13.2).
+func TestUpdateForcedOffInAContainer(t *testing.T) {
+	setEnv(t, map[string]string{
+		"ORCHARD_STATE_DIR":      t.TempDir(),
+		"ORCHARD_TOKEN":          strings.Repeat("t", minTokenLen),
+		"ORCHARD_UPDATE_ENABLED": "true",
+		"ORCHARD_IN_CONTAINER":   "1",
+	})
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.Update.Enabled {
+		t.Error("the setting itself should be preserved")
+	}
+	if c.SelfUpdates() {
+		t.Error("SelfUpdates() is true in a container")
+	}
+}
+
+func TestUpdateRejections(t *testing.T) {
+	base := map[string]string{
+		"ORCHARD_STATE_DIR": t.TempDir(),
+		"ORCHARD_TOKEN":     strings.Repeat("t", minTokenLen),
+	}
+	for name, extra := range map[string]map[string]string{
+		"bad enabled":   {"ORCHARD_UPDATE_ENABLED": "sometimes"},
+		"bad interval":  {"ORCHARD_UPDATE_INTERVAL": "often"},
+		"tiny interval": {"ORCHARD_UPDATE_INTERVAL": "5s"},
+		"bad repo":      {"ORCHARD_UPDATE_REPO": "orchard"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			env := map[string]string{}
+			for k, v := range base {
+				env[k] = v
+			}
+			for k, v := range extra {
+				env[k] = v
+			}
+			setEnv(t, env)
+			if _, err := Load(); err == nil {
+				t.Errorf("Load accepted %v", extra)
+			}
+		})
 	}
 }
