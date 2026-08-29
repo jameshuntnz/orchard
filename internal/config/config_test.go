@@ -199,9 +199,9 @@ func TestUploadAllowMatching(t *testing.T) {
 		"192.168.64.7":        true,  // a guest on it
 		"192.168.99.3":        true,  // a bridge that renumbered
 		"::ffff:192.168.64.7": true,  // the same guest, v4-mapped
-		"192.168.0.145":       false, // the host's own LAN address
+		"192.168.0.145":       false, // an address on the host's own LAN
 		"192.168.0.50":        false, // anything else on the LAN
-		"100.66.217.76":       false, // a tailnet node
+		"100.64.0.1":          false, // a tailnet node (CGNAT range)
 		"::1":                 false, // not listed, so not allowed
 	}
 	for s, want := range tests {

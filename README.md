@@ -307,3 +307,9 @@ Linux container built from `.sapling/images/go/Dockerfile` — the bare runner h
 compiler, and `go test -race` links the race runtime through cgo. That is a dependency of
 this *repository's* pipeline, not of the service: `go test ./... -race` and
 `go build ./cmd/orchard` work anywhere with a Go toolchain.
+
+**Pull requests from forks get no checks.** That is deliberate, not an oversight. The
+runner builds the image above from the Dockerfile at the job's own commit, and that build
+runs on the host rather than inside the job container — so running a fork's branch would
+hand it code execution on the node. Until the runner sandboxes untrusted code, a
+maintainer runs those checks by pushing the branch to this repository.

@@ -23,7 +23,7 @@
 #
 # Environment:
 #   ORCHARD_TOKEN  required, the bearer token
-#   ORCHARD_URL    optional, e.g. https://orchard.tailaefa69.ts.net
+#   ORCHARD_URL    optional, e.g. https://orchard.your-tailnet.ts.net
 #   ORCHARD_PORT   optional, upload listener port (default 8477)
 
 set -euo pipefail

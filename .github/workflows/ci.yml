@@ -18,6 +18,20 @@ permissions:
 
 jobs:
   check:
+    # A pull request from a fork does not run here.
+    #
+    # This repository builds on a self-hosted runner, and image:go means the runner
+    # builds .sapling/images/go/Dockerfile from the job's own commit — a build that
+    # happens on the host, outside the job container. A fork's pull request could
+    # therefore execute code on the node by editing that file, which is the documented
+    # behaviour rather than a hole to patch here.
+    #
+    # So fork pull requests get no checks at all, deliberately. A maintainer can run
+    # them by pushing the branch to this repository.
+    if: >-
+      github.event_name != 'pull_request'
+      || github.event.pull_request.head.repo.full_name == github.repository
+
     # image:go carries the toolchain and a C compiler; see .sapling/images/go/Dockerfile.
     runs-on: [self-hosted, linux, arm64, image:go]
     # A self-hosted job queues indefinitely when no runner matches, so cap it rather
