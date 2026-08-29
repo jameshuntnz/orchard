@@ -9,4 +9,4 @@ package version
 // enough to true — it is that release plus whatever has landed since — and
 // deploy/install.sh derives a dev version instead, so a hand-installed binary sorts
 // correctly against what the release feed publishes.
-const Current = "0.0.0"
+const Current = "0.1.0"
