@@ -233,6 +233,25 @@ an update, so the previous binary still understands everything it left behind.
 A publish in flight defers the update to the next check rather than interrupting a
 transfer that may have taken minutes.
 
+`/healthz` reports the outcome of the last check, not just whether updating is switched
+on:
+
+```json
+"selfUpdate": {
+  "enabled": true,
+  "channel": "dev",
+  "lastCheck": "2026-08-29T10:31:04Z",
+  "available": "0.2.0"
+}
+```
+
+`enabled` is intent; `lastCheck` and `lastError` are whether it is actually happening. The
+two do come apart — a node configured to update, reporting itself enabled, with every
+check failing on authentication — and a node that has silently stopped tracking releases
+looks exactly like one that is already up to date. The first check runs at startup rather
+than an interval later, so the field is populated during the window when a
+misconfiguration is most likely.
+
 ```bash
 orchard update --check              # what is available
 orchard update                      # fetch, verify, install

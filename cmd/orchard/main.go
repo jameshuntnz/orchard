@@ -434,17 +434,17 @@ func serve(args []string) error {
 	switch {
 	case *devAddr != "":
 		// Development mode replaces the binary's own idea of where it lives.
-		srv.SelfUpdate = api.SelfUpdateStatus{Reason: "development mode"}
+		srv.SetSelfUpdate(api.SelfUpdateStatus{Reason: "development mode"})
 	case cfg.Update.InContainer:
-		srv.SelfUpdate = api.SelfUpdateStatus{Reason: "container: the image tag is the unit of deployment"}
+		srv.SetSelfUpdate(api.SelfUpdateStatus{Reason: "container: the image tag is the unit of deployment"})
 		log.Info("self-update disabled: this is a container, so the image tag is the unit of deployment")
 	case !cfg.Update.Enabled:
-		srv.SelfUpdate = api.SelfUpdateStatus{Reason: "disabled by configuration"}
+		srv.SetSelfUpdate(api.SelfUpdateStatus{Reason: "disabled by configuration"})
 		log.Info("self-update disabled by configuration")
 	default:
 		binary, err := os.Executable()
 		if err != nil {
-			srv.SelfUpdate = api.SelfUpdateStatus{Reason: "cannot determine the running binary"}
+			srv.SetSelfUpdate(api.SelfUpdateStatus{Reason: "cannot determine the running binary"})
 			log.Warn("self-update disabled: cannot determine the running binary", "err", err)
 			break
 		}
@@ -459,14 +459,27 @@ func serve(args []string) error {
 			Token:    cfg.Update.Token,
 		}, buildVersion(), binary)
 		if err != nil {
-			srv.SelfUpdate = api.SelfUpdateStatus{Reason: err.Error()}
+			srv.SetSelfUpdate(api.SelfUpdateStatus{Reason: err.Error()})
 			log.Warn("self-update disabled", "err", err)
 			break
 		}
-		srv.SelfUpdate = api.SelfUpdateStatus{Enabled: true, Channel: cfg.Update.Channel}
+		base := api.SelfUpdateStatus{Enabled: true, Channel: cfg.Update.Channel}
+		srv.SetSelfUpdate(base)
+		// Reporting the outcome of each check is what keeps "enabled" from being the
+		// only thing /healthz knows, since the two can disagree for months.
+		record := func(available string, checkErr error) {
+			st := base
+			now := time.Now().UTC()
+			st.LastCheck = &now
+			st.Available = available
+			if checkErr != nil {
+				st.LastError = checkErr.Error()
+			}
+			srv.SetSelfUpdate(st)
+		}
 		log.Info("self-update enabled", "repo", cmp.Or(cfg.Update.Repo, update.DefaultRepo),
 			"channel", cfg.Update.Channel, "interval", cfg.Update.Interval.String())
-		go updateLoop(ctx, u, cfg.Update.Interval, srv.PublishesInFlight, log, stop)
+		go updateLoop(ctx, u, cfg.Update.Interval, srv.PublishesInFlight, log, stop, record)
 	}
 
 	select {
@@ -568,15 +581,20 @@ func selfCheck(st *store.Store, renderer *web.Renderer) error {
 // privilege beyond writing to the install directory the service already owns, so there
 // is no sudo, no root daemon and no launchctl permission to arrange (DESIGN §14.1).
 func updateLoop(ctx context.Context, u *update.Updater, interval time.Duration,
-	inFlight func() int64, log *slog.Logger, done func()) {
+	inFlight func() int64, log *slog.Logger, done func(), record func(string, error)) {
 
 	t := time.NewTicker(interval)
 	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
+	// The first check runs immediately rather than an interval from now. Waiting six
+	// hours to find out whether updating works at all would leave /healthz reporting
+	// nothing for exactly the window in which a misconfiguration is most likely.
+	for first := true; ; first = false {
+		if !first {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+			}
 		}
 
 		// An update that replaced the binary mid-publish would abort a transfer that
@@ -589,15 +607,19 @@ func updateLoop(ctx context.Context, u *update.Updater, interval time.Duration,
 
 		rel, err := u.Latest(ctx)
 		if errors.Is(err, update.ErrNoUpdate) {
+			record("", nil)
 			continue
 		}
 		if err != nil {
+			record("", err)
 			log.Warn("update check failed", "err", err)
 			continue
 		}
+		record(rel.Version.String(), nil)
 
 		body, err := u.Fetch(ctx, rel)
 		if err != nil {
+			record(rel.Version.String(), err)
 			log.Error("refusing the update", "version", rel.Version.String(), "err", err)
 			continue
 		}
@@ -609,6 +631,7 @@ func updateLoop(ctx context.Context, u *update.Updater, interval time.Duration,
 			continue
 		}
 		if err := u.Install(body, rel.Version); err != nil {
+			record(rel.Version.String(), err)
 			log.Error("installing the update failed", "version", rel.Version.String(), "err", err)
 			continue
 		}

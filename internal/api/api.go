@@ -46,10 +46,9 @@ type Server struct {
 	// the tailnet is already the boundary (DESIGN §10).
 	UploadAllowed func(netip.Addr) bool
 
-	// SelfUpdate describes whether this node moves on its own. With dev builds
-	// publishing per green commit, "which version is it running" stops being the
-	// whole question and "will it change under me" becomes the other half.
-	SelfUpdate SelfUpdateStatus
+	// selfUpdate is written by the update loop and read by every /healthz request,
+	// so it is guarded rather than exported.
+	selfUpdate atomic.Pointer[SelfUpdateStatus]
 
 	// publishing counts uploads currently being received. An update that replaced the
 	// binary mid-publish would abort a transfer that may have taken minutes.
@@ -148,6 +147,31 @@ type SelfUpdateStatus struct {
 	// Reason says why it is off, when it is: a container, configuration, or a
 	// running version that cannot be ordered against a release feed.
 	Reason string `json:"reason,omitempty"`
+
+	// LastCheck is when the release feed was last asked anything.
+	//
+	// Enabled says what this node intends; these say whether it is actually
+	// happening. The two came apart in practice — a node can be configured to
+	// update, report itself enabled, and have every check failing on
+	// authentication — and a node that has silently stopped tracking releases looks
+	// exactly like one that is already up to date. Absent means no check has
+	// completed yet.
+	LastCheck *time.Time `json:"lastCheck,omitempty"`
+	// LastError is what went wrong on that check, empty when it succeeded.
+	LastError string `json:"lastError,omitempty"`
+	// Available is the newer version the feed offered, when there is one. Empty
+	// means the check succeeded and nothing was newer.
+	Available string `json:"available,omitempty"`
+}
+
+// SetSelfUpdate records the updater's state for /healthz to report.
+func (s *Server) SetSelfUpdate(st SelfUpdateStatus) { s.selfUpdate.Store(&st) }
+
+func (s *Server) selfUpdateStatus() SelfUpdateStatus {
+	if st := s.selfUpdate.Load(); st != nil {
+		return *st
+	}
+	return SelfUpdateStatus{}
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -156,7 +180,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"version":     s.Version,
 		"apiVersions": APIVersions,
 		"deprecated":  Deprecated,
-		"selfUpdate":  s.SelfUpdate,
+		"selfUpdate":  s.selfUpdateStatus(),
 	})
 }
 

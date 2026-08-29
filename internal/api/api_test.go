@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"strings"
 	"testing"
+	"time"
 
 	"howett.net/plist"
 
@@ -488,7 +489,7 @@ func TestUploadListenerServesWritesOnly(t *testing.T) {
 
 func TestHealthz(t *testing.T) {
 	h := newHarness(t)
-	h.SelfUpdate = SelfUpdateStatus{Enabled: true, Channel: "dev"}
+	h.SetSelfUpdate(SelfUpdateStatus{Enabled: true, Channel: "dev"})
 	h.tailnet.Close()
 	h.tailnet = httptest.NewServer(h.Server.TailnetMux())
 	t.Cleanup(h.tailnet.Close)
@@ -621,7 +622,7 @@ func TestAllowlistDoesNotAffectTheTailnetListener(t *testing.T) {
 // nobody configured it" are different situations to be looking at during an incident.
 func TestHealthzReportsWhySelfUpdateIsOff(t *testing.T) {
 	h := newHarness(t)
-	h.SelfUpdate = SelfUpdateStatus{Reason: "container: the image tag is the unit of deployment"}
+	h.SetSelfUpdate(SelfUpdateStatus{Reason: "container: the image tag is the unit of deployment"})
 	h.tailnet.Close()
 	h.tailnet = httptest.NewServer(h.Server.TailnetMux())
 	t.Cleanup(h.tailnet.Close)
@@ -636,4 +637,78 @@ func TestHealthzReportsWhySelfUpdateIsOff(t *testing.T) {
 	if !strings.Contains(got.SelfUpdate.Reason, "image tag") {
 		t.Errorf("reason = %q", got.SelfUpdate.Reason)
 	}
+}
+
+// Enabled says what the node intends; lastCheck says whether it is happening. The two
+// came apart in practice — configured to update, reporting itself enabled, every check
+// failing on authentication — and a node that has silently stopped tracking releases
+// looks exactly like one that is already up to date.
+func TestHealthzReportsTheLastCheckOutcome(t *testing.T) {
+	h := newHarness(t)
+	h.tailnet.Close()
+	h.tailnet = httptest.NewServer(h.Server.TailnetMux())
+	t.Cleanup(h.tailnet.Close)
+
+	type health struct {
+		SelfUpdate SelfUpdateStatus `json:"selfUpdate"`
+	}
+
+	t.Run("before any check has completed", func(t *testing.T) {
+		h.SetSelfUpdate(SelfUpdateStatus{Enabled: true, Channel: "dev"})
+		got := decode[health](t, h.get(t, "/healthz")).SelfUpdate
+		if got.LastCheck != nil {
+			t.Error("lastCheck present before any check ran")
+		}
+	})
+
+	t.Run("a failing check is visible despite enabled", func(t *testing.T) {
+		now := time.Now().UTC()
+		h.SetSelfUpdate(SelfUpdateStatus{
+			Enabled:   true,
+			Channel:   "dev",
+			LastCheck: &now,
+			LastError: "listing releases: 404 Not Found",
+		})
+		got := decode[health](t, h.get(t, "/healthz")).SelfUpdate
+		if !got.Enabled {
+			t.Error("enabled should still be true — the intent has not changed")
+		}
+		if got.LastCheck == nil || got.LastError == "" {
+			t.Fatalf("a failing check is not visible: %+v", got)
+		}
+		if !strings.Contains(got.LastError, "404") {
+			t.Errorf("lastError = %q", got.LastError)
+		}
+	})
+
+	t.Run("a successful check with something newer", func(t *testing.T) {
+		now := time.Now().UTC()
+		h.SetSelfUpdate(SelfUpdateStatus{
+			Enabled: true, Channel: "dev", LastCheck: &now, Available: "0.2.0",
+		})
+		got := decode[health](t, h.get(t, "/healthz")).SelfUpdate
+		if got.LastError != "" {
+			t.Errorf("lastError = %q, want empty on success", got.LastError)
+		}
+		if got.Available != "0.2.0" {
+			t.Errorf("available = %q", got.Available)
+		}
+	})
+}
+
+// The update loop writes this while /healthz reads it, so it has to be safe under -race.
+func TestSelfUpdateStatusIsSafeConcurrently(t *testing.T) {
+	h := newHarness(t)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := range 50 {
+			now := time.Now().UTC()
+			h.SetSelfUpdate(SelfUpdateStatus{Enabled: true, LastCheck: &now, Available: string(rune('a' + i%26))})
+		}
+	}()
+	for range 50 {
+		_ = h.Server.selfUpdateStatus()
+	}
+	<-done
 }
