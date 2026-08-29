@@ -1,17 +1,32 @@
 name: Release
 
-# Tagged releases produce the artifacts the self-updater consumes. There is no schedule
-# and no push trigger: a release is a deliberate act, and the service updates itself on a
-# timer from whatever is published here.
+# Follows jameshuntnz/sapling's release process deliberately: same channels, same version
+# derivation, same commands. Two services on one node that released differently would be
+# two things to remember.
+#
+# A dev build publishes for every commit that reaches main green. Release is triggered by
+# CI succeeding rather than by the push, which is what makes it cheap enough to do every
+# time: CI has just run vet, gofmt and the full race suite on that exact commit, so the
+# release skips its own verification. CI cancels in progress, so a burst of pushes leaves
+# one surviving run and therefore one release. This workflow cannot cancel in progress —
+# interrupting it between tagging and publishing would leave a tag with no release.
+run-name: >-
+  Release ${{ github.event.inputs.channel || 'dev' }} @
+  ${{ github.event.workflow_run.head_sha || github.sha }}
+
 on:
-  push:
-    tags: ['v*']
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
     inputs:
-      version:
-        description: 'Version to release, without the leading v (e.g. 0.1.0)'
+      channel:
+        description: 'Which channel to publish'
         required: true
-        type: string
+        default: dev
+        type: choice
+        options: [dev, rc, stable, hotfix]
 
 concurrency:
   group: release
@@ -22,13 +37,21 @@ permissions:
 
 jobs:
   release:
+    # workflow_run fires on every completion, cancelled and failed included, so the
+    # conclusion has to be checked explicitly or a red CI run publishes.
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || github.event.workflow_run.conclusion == 'success'
     runs-on: [self-hosted, linux, arm64, image:go]
-    timeout-minutes: 20
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 0 # version derivation needs full history and tags
+          # A workflow_run job checks out the default branch by default, which is not
+          # necessarily the commit CI verified — main may have moved while CI ran.
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
 
       - uses: actions/cache@v4
         with:
@@ -38,31 +61,49 @@ jobs:
           key: go-${{ hashFiles('go.sum') }}
           restore-keys: go-
 
-      - name: Resolve version
+      - name: Work out the version
         id: version
-        env:
-          INPUT_VERSION: ${{ inputs.version }}
         run: |
-          if [ -n "$INPUT_VERSION" ]; then
-            version="${INPUT_VERSION#v}"
+          # A workflow_run event carries no inputs; the automatic path is dev.
+          CHANNEL="${{ github.event.inputs.channel || 'dev' }}"
+          VERSION="$(./scripts/next-version.sh "$CHANNEL" || true)"
+          echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
+          if [ -z "$VERSION" ]; then
+            echo "Nothing to release on $CHANNEL: no feat/fix/perf commits since the last release."
+            echo "release=false" >> "$GITHUB_OUTPUT"
           else
-            version="${GITHUB_REF_NAME#v}"
+            # Build metadata stays in the version the binary reports but is stripped
+            # from the tag: "+" is literal in a URL path and a space in a query string.
+            # Semver ignores it for precedence, so the tag loses nothing that matters.
+            TAG="v${VERSION%%+*}"
+            echo "Releasing $VERSION on $CHANNEL as $TAG"
+            echo "release=true" >> "$GITHUB_OUTPUT"
+            echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           fi
-          # The updater compares versions, so a malformed one would be silently
-          # unorderable rather than obviously wrong.
-          if ! printf '%s' "$version" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
-            echo "::error::'$version' is not a semantic version"
-            exit 1
-          fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "releasing $version"
 
-      - name: Test before publishing anything
-        run: go test ./... -race
+      # Skipped on the automatic path: CI ran precisely these checks on this exact
+      # commit, which is the event that triggered this run. A deliberate dispatch
+      # verifies regardless — it may target a commit CI never saw.
+      - name: Verify
+        if: >-
+          steps.version.outputs.release == 'true'
+          && github.event_name == 'workflow_dispatch'
+        run: |
+          test -z "$(gofmt -l .)" || { echo "not gofmt'd"; gofmt -l .; exit 1; }
+          go vet ./...
+          ./scripts/test-next-version.sh
+          go test ./... -race
 
-      - name: Build release artifacts
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
+      - name: Stamp the version
+        if: steps.version.outputs.release == 'true'
+        run: |
+          sed -i "s/^const Current = \".*\"$/const Current = \"${{ steps.version.outputs.version }}\"/" \
+            internal/version/version.go
+          grep -n 'const Current' internal/version/version.go
+
+      - name: Build and package
+        if: steps.version.outputs.release == 'true'
         run: |
           mkdir -p dist
           for target in darwin/arm64 linux/amd64 linux/arm64; do
@@ -70,27 +111,108 @@ jobs:
             # A tarball holds the binary and nothing else, so the updater's extraction
             # has exactly one thing to find.
             CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build \
-              -trimpath -ldflags "-s -w -X main.version=${VERSION}" \
-              -o "dist/orchard" ./cmd/orchard
-            tar -czf "dist/orchard_${VERSION}_${goos}_${goarch}.tar.gz" -C dist orchard
+              -trimpath -ldflags "-s -w" -o dist/orchard ./cmd/orchard
+            # Named from the tag rather than the version: an asset name carrying "+"
+            # risks being mangled in transit, and the updater matches the downloaded
+            # file's name against SHA256SUMS when verifying it.
+            NAME="${{ steps.version.outputs.tag }}"
+            tar -czf "dist/orchard_${NAME#v}_${goos}_${goarch}.tar.gz" -C dist orchard
             rm dist/orchard
           done
-
-          # A release without checksums is refused by the updater rather than installed
-          # unverified, so this file is not optional.
-          cd dist && sha256sum orchard_*.tar.gz > SHA256SUMS
+          cd dist
+          # The updater refuses a release without this rather than installing it
+          # unverified, so it is not optional.
+          sha256sum *.tar.gz > SHA256SUMS
           cat SHA256SUMS
 
-      - name: Publish
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.version.outputs.version }}
+      # Only a finished release moves the version recorded in the source. A dev build's
+      # version is derived, and committing one per push would both spam main and
+      # re-trigger this workflow. Done before tagging so a stable tag points at the
+      # commit recording that version, not the one before it.
+      - name: Tag and record
+        if: steps.version.outputs.release == 'true'
         run: |
-          if gh release view "v${VERSION}" >/dev/null 2>&1; then
-            echo "::error::v${VERSION} already exists; releases are immutable because the updater trusts their checksums"
-            exit 1
+          TAG="${{ steps.version.outputs.tag }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if [ "${{ steps.version.outputs.channel }}" = "stable" ]; then
+            git add internal/version/version.go
+            # The stamped version can already match what is in the source, and
+            # `git commit` exits 1 on an empty commit, which would fail a release that
+            # is otherwise entirely fine.
+            if git diff --cached --quiet; then
+              echo "version already recorded in the source"
+            else
+              git commit -m "chore(release): ${TAG} [skip ci]"
+            fi
           fi
-          gh release create "v${VERSION}" \
-            --title "v${VERSION}" \
-            --generate-notes \
-            dist/orchard_*.tar.gz dist/SHA256SUMS
+
+          # Idempotent: a previous attempt may have pushed the tag before failing later
+          # on, and a re-run must not stop there.
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "tag $TAG already exists locally"
+          else
+            git tag -a "$TAG" -m "${{ steps.version.outputs.version }}"
+          fi
+
+          if [ "${{ steps.version.outputs.channel }}" = "stable" ]; then
+            git push origin HEAD:main
+          fi
+          git push origin "$TAG" 2>&1 | tail -2 || echo "tag already on the remote"
+
+      # Uses the REST API rather than `gh`, which this image does not carry — and adding
+      # it would be one more thing the image has to keep up to date. curl is always
+      # present.
+      - name: Publish
+        if: steps.version.outputs.release == 'true'
+        env:
+          TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.version.outputs.tag }}"
+          CHANNEL="${{ steps.version.outputs.channel }}"
+          # Anything unfinished is flagged prerelease, so the update checker and a person
+          # reading the releases page agree without either having to parse versions.
+          PRERELEASE=true
+          if [ "$CHANNEL" = "stable" ] || [ "$CHANNEL" = "hotfix" ]; then
+            PRERELEASE=false
+          fi
+
+          api() { curl -sS -H "Authorization: Bearer $TOKEN" \
+                       -H "Accept: application/vnd.github+json" \
+                       -H "X-GitHub-Api-Version: 2022-11-28" "$@"; }
+
+          BODY=$(printf '{"tag_name":"%s","name":"%s","prerelease":%s,"generate_release_notes":true}' \
+                 "$TAG" "$TAG" "$PRERELEASE")
+          RESPONSE=$(api -X POST -d "$BODY" "https://api.github.com/repos/$REPO/releases")
+
+          RELEASE_ID=$(printf '%s' "$RESPONSE" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin).get("id",""))')
+          if [ -z "$RELEASE_ID" ]; then
+            echo "could not create the release:"; printf '%s\n' "$RESPONSE"; exit 1
+          fi
+          echo "created release $RELEASE_ID for $TAG"
+
+          for FILE in dist/*.tar.gz dist/SHA256SUMS; do
+            NAME=$(basename "$FILE")
+            echo "uploading $NAME"
+            curl -sS --fail-with-body \
+              -H "Authorization: Bearer $TOKEN" \
+              -H "Content-Type: application/octet-stream" \
+              --data-binary @"$FILE" \
+              "https://uploads.github.com/repos/$REPO/releases/$RELEASE_ID/assets?name=$NAME" \
+              > /dev/null
+          done
+          echo "published $TAG"
+
+      # Best-effort on purpose: a release that built, tagged and published correctly must
+      # not be marked failed because tidying up afterwards hit a network error.
+      - name: Prune old dev releases
+        if: steps.version.outputs.release == 'true'
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: ./scripts/prune-dev-releases.sh 10

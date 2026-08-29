@@ -41,11 +41,21 @@ x86_64 | amd64) goarch=amd64 ;;
 *) echo "unsupported remote architecture: $remote_arch" >&2; exit 1 ;;
 esac
 
-version=$(git describe --tags --always --dirty 2>/dev/null || echo dev)
+# A hand-installed binary gets the same dev version the release pipeline would derive
+# for this commit, so it sorts correctly against what the release feed publishes. A
+# commit hash would not be comparable at all, and self-update refuses to guess.
+version=$(./scripts/next-version.sh dev 2>/dev/null || true)
+ldflags="-s -w"
+if [ -n "$version" ]; then
+	ldflags="$ldflags -X main.stampedVersion=${version}"
+else
+	version="the version recorded in source"
+fi
+
 echo "==> building orchard ${version} for ${goos}/${goarch}"
 mkdir -p dist
 CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build \
-	-trimpath -ldflags "-s -w -X main.version=${version}" \
+	-trimpath -ldflags "$ldflags" \
 	-o "dist/orchard-${goos}-${goarch}" ./cmd/orchard
 
 echo "==> copying to ${host}"

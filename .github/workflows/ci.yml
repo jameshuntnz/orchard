@@ -49,6 +49,11 @@ jobs:
 
       - run: go vet ./...
 
+      # The release pipeline derives its version from commit messages, so the derivation
+      # is checked here rather than discovered at release time.
+      - name: Version derivation
+        run: ./scripts/test-next-version.sh
+
       # -race is why the image carries gcc.
       - run: go test ./... -race
 

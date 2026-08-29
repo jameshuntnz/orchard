@@ -249,11 +249,40 @@ so this detects corruption and interrupted downloads, not a compromised reposito
 Signing the artifacts and verifying a pinned public key would close that, and is the
 obvious next step.
 
-Releases are cut by tagging:
+### Releasing
 
-```bash
-git tag v0.1.0 && git push origin v0.1.0
-```
+The same process as [Sapling](https://github.com/jameshuntnz/sapling), deliberately —
+same channels, same version derivation, same commands. Two services on one node that
+released differently would be two things to remember, and the scripts are vendored from
+there rather than reimplemented.
+
+**Commit messages decide the version**, read by `scripts/next-version.sh`:
+
+| Prefix | Bump |
+|---|---|
+| `feat:` | minor |
+| `fix:` `perf:` | patch |
+| `feat!:` or `BREAKING CHANGE:` in the body | major (minor while 0.x) |
+| `docs:` `test:` `chore:` `refactor:` `ci:` `style:` | none — a release with only these publishes nothing |
+
+**Channels are encoded in the version**, so nothing is tracked separately:
+
+| Channel | Looks like | Cut from |
+|---|---|---|
+| `dev` | `0.2.0-dev.7+a1b2c3d` | every commit that reaches main green |
+| `rc` | `0.2.0-rc.1` | main, when a version looks ready |
+| `stable` | `0.2.0` | a candidate you are happy with |
+| `hotfix` | `0.1.1` | a release branch |
+
+`0.2.0-dev.7 < 0.2.0-rc.1 < 0.2.0 < 0.2.1-dev.1`, so a node on `0.2.0` will not take
+`0.2.0-dev.9` — correctly, that build is older.
+
+A dev build publishes for every green commit to main, triggered by CI succeeding rather
+than by the push: CI has just run the same checks on that exact commit, so the release
+skips its own verification, and because CI cancels in progress a burst of pushes leaves
+one release rather than one per commit. Promotion to `rc` and `stable` is a deliberate
+`workflow_dispatch`, and a deliberate run always verifies — it may target a commit CI
+never saw.
 
 ## What Orchard assumes about its host
 

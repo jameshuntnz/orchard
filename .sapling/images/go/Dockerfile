@@ -11,6 +11,10 @@
 #   - A C compiler. `go test -race` links the race runtime through cgo, so on
 #     arm64 the race detector does not run at all without one — and the failure
 #     names cgo rather than the missing compiler.
+#
+# python3 is here for the release workflow, which reads one field out of a GitHub
+# API response. Depending on it being present in the base image and finding out
+# during a release is worse than one more package.
 FROM --platform=linux/arm64 ghcr.io/actions/actions-runner:latest
 
 USER root
@@ -18,7 +22,7 @@ USER root
 RUN set -eux; \
     apt-get update -qq; \
     apt-get install -y --no-install-recommends \
-        gcc libc6-dev git ca-certificates curl; \
+        gcc libc6-dev git ca-certificates curl python3; \
     rm -rf /var/lib/apt/lists/*
 
 # Must track the `go` directive in go.mod. GOTOOLCHAIN=local below is what keeps

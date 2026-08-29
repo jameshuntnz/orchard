@@ -15,7 +15,6 @@ import (
 	"os/signal"
 	"os/user"
 	"path/filepath"
-	"runtime/debug"
 	"strings"
 	"syscall"
 	"time"
@@ -27,11 +26,14 @@ import (
 	"github.com/jameshuntnz/orchard/internal/install"
 	"github.com/jameshuntnz/orchard/internal/store"
 	"github.com/jameshuntnz/orchard/internal/update"
+	"github.com/jameshuntnz/orchard/internal/version"
 	"github.com/jameshuntnz/orchard/internal/web"
 )
 
-// version is stamped at build time with -ldflags "-X main.version=…".
-var version = ""
+// stampedVersion is set with -ldflags for a one-off build. Normally the version comes
+// from the constant the release workflow rewrites in source, which is what makes a
+// binary's own account of itself survive being copied around.
+var stampedVersion = ""
 
 func main() {
 	cmd := "serve"
@@ -75,13 +77,10 @@ func main() {
 }
 
 func buildVersion() string {
-	if version != "" {
-		return version
+	if stampedVersion != "" {
+		return stampedVersion
 	}
-	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" {
-		return info.Main.Version
-	}
-	return "dev"
+	return version.Current
 }
 
 // provision runs the install steps, applying fixes when apply is set. `doctor` is the
