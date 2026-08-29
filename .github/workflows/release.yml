@@ -184,7 +184,18 @@ jobs:
                        -H "Accept: application/vnd.github+json" \
                        -H "X-GitHub-Api-Version: 2022-11-28" "$@"; }
 
-          BODY=$(printf '{"tag_name":"%s","name":"%s","prerelease":%s,"generate_release_notes":true}' \
+          # Created as a draft, and published only once every asset is uploaded.
+          #
+          # A release is discoverable the moment it exists, but its assets arrive one at
+          # a time afterwards — around thirty megabytes across four files. An updater
+          # checking inside that window finds a release with no SHA256SUMS and correctly
+          # refuses to install it unverified, then waits a whole interval to retry a
+          # condition that resolved in seconds. Observed, not theorised: a node checked
+          # twelve seconds after creation and refused v0.1.1-dev.4.
+          #
+          # A draft is invisible to the updater, which skips them, so the release only
+          # becomes discoverable when it is complete.
+          BODY=$(printf '{"tag_name":"%s","name":"%s","prerelease":%s,"draft":true,"generate_release_notes":true}' \
                  "$TAG" "$TAG" "$PRERELEASE")
           RESPONSE=$(api -X POST -d "$BODY" "https://api.github.com/repos/$REPO/releases")
 
@@ -205,6 +216,10 @@ jobs:
               "https://uploads.github.com/repos/$REPO/releases/$RELEASE_ID/assets?name=$NAME" \
               > /dev/null
           done
+
+          # Now it is complete, make it visible.
+          api -X PATCH -d '{"draft":false}' \
+            "https://api.github.com/repos/$REPO/releases/$RELEASE_ID" > /dev/null
           echo "published $TAG"
 
       # Best-effort on purpose: a release that built, tagged and published correctly must
